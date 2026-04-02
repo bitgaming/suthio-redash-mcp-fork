@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
 import * as dotenv from 'dotenv';
-import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createRedashClient } from "./redashClient.js";
+import { createServer } from "./index.js";
+import { logger } from "./logger.js";
 
 // Check if .env file exists in current directory and load it
 const envPath = path.join(process.cwd(), '.env');
@@ -29,5 +32,20 @@ if (missingVars.length > 0) {
   process.exit(1);
 }
 
-// Run the MCP server
-import './index.js';
+async function main() {
+  try {
+    const redashClient = createRedashClient();
+    const server = createServer(redashClient);
+    const transport = new StdioServerTransport();
+
+    logger.info("Starting Redash MCP server...");
+    await server.connect(transport);
+    logger.setServer(server);
+    logger.info("Redash MCP server connected!");
+  } catch (error) {
+    logger.error(`Failed to start server: ${error}`);
+    process.exit(1);
+  }
+}
+
+main();

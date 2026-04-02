@@ -1,7 +1,4 @@
-#!/usr/bin/env node
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -9,14 +6,10 @@ import {
   ReadResourceRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import * as dotenv from 'dotenv';
-import { createRedashClient, CreateQueryRequest, UpdateQueryRequest, CreateVisualizationRequest, UpdateVisualizationRequest, CreateDashboardRequest, UpdateDashboardRequest, CreateAlertRequest, UpdateAlertRequest, CreateAlertSubscriptionRequest, CreateWidgetRequest, UpdateWidgetRequest, CreateQuerySnippetRequest, UpdateQuerySnippetRequest } from "./redashClient.js";
-
-const redashClient = createRedashClient();
+import { RedashClient, CreateQueryRequest, UpdateQueryRequest, CreateVisualizationRequest, UpdateVisualizationRequest, CreateDashboardRequest, UpdateDashboardRequest, CreateAlertRequest, UpdateAlertRequest, CreateAlertSubscriptionRequest, CreateWidgetRequest, UpdateWidgetRequest, CreateQuerySnippetRequest, UpdateQuerySnippetRequest } from "./redashClient.js";
 import { logger, LogLevel } from "./logger.js";
 
-// Load environment variables
-dotenv.config();
+export function createServer(redashClient: RedashClient): Server {
 
 // Create MCP server instance
 const server = new Server(
@@ -2587,19 +2580,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Start the server with stdio transport
-async function main() {
-  try {
-    const transport = new StdioServerTransport();
+return server;
 
-    logger.info("Starting Redash MCP server...");
-    await server.connect(transport);
-    logger.setServer(server);
-    logger.info("Redash MCP server connected!");
-  } catch (error) {
-    logger.error(`Failed to start server: ${error}`);
-    process.exit(1);
-  }
-}
-
-main();
+} // end createServer
