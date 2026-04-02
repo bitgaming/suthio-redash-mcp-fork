@@ -10,7 +10,9 @@ process.env.REDASH_URL = 'https://redash.example.com';
 process.env.REDASH_API_KEY = 'test-api-key';
 process.env.REDASH_TIMEOUT = '30000';
 
-import { redashClient } from '../redashClient.js';
+import { createRedashClient } from '../redashClient.js';
+
+const redashClient = createRedashClient();
 import { logger } from '../logger.js';
 import { jest } from '@jest/globals';
 

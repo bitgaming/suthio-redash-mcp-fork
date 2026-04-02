@@ -262,12 +262,15 @@ export class RedashClient {
   private baseUrl: string;
   private apiKey: string;
 
-  constructor() {
+  constructor(apiKey?: string) {
     this.baseUrl = process.env.REDASH_URL || '';
-    this.apiKey = process.env.REDASH_API_KEY || '';
+    this.apiKey = apiKey || process.env.REDASH_API_KEY || '';
 
-    if (!this.baseUrl || !this.apiKey) {
-      throw new Error('REDASH_URL and REDASH_API_KEY must be provided in .env file');
+    if (!this.baseUrl) {
+      throw new Error('REDASH_URL must be provided in .env file');
+    }
+    if (!this.apiKey) {
+      throw new Error('REDASH_API_KEY must be provided via constructor argument or .env file');
     }
 
     const defaultHeaders: Record<string, string> = {
@@ -1230,5 +1233,6 @@ export class RedashClient {
   }
 }
 
-// Export a singleton instance
-export const redashClient = new RedashClient();
+export function createRedashClient(apiKey?: string): RedashClient {
+  return new RedashClient(apiKey);
+}
