@@ -9,6 +9,7 @@ import { logger } from "./logger.js";
 import { RedashOAuthProvider, getRedashApiKeyFromAuth } from "./auth.js";
 
 const app = express();
+app.set("trust proxy", true);
 app.use(express.json());
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
