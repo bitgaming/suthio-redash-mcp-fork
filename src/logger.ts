@@ -59,8 +59,31 @@ export class Logger {
    * Log a message with the specified level
    */
   log(level: LogLevel, message: string): void {
-    // Always output to stderr for local debugging
-    console.error(`[${level.toUpperCase()}] ${message}`);
+    // In production, output structured JSON for Google Cloud Logging / Error Reporting.
+    // Locally, output plain text for readability.
+    if (process.env.NODE_ENV === "production") {
+      const severityMap: Record<string, string> = {
+        debug: "DEBUG",
+        info: "INFO",
+        notice: "NOTICE",
+        warning: "WARNING",
+        error: "ERROR",
+        critical: "CRITICAL",
+        alert: "ALERT",
+        emergency: "EMERGENCY",
+      };
+      const entry: Record<string, unknown> = {
+        severity: severityMap[level] || "DEFAULT",
+        message,
+        "serviceContext": { service: "redash-mcp" },
+      };
+      if (level === LogLevel.ERROR || level === LogLevel.CRITICAL || level === LogLevel.ALERT || level === LogLevel.EMERGENCY) {
+        entry["@type"] = "type.googleapis.com/google.devtools.clouderrorreporting.v1beta1.ReportedErrorEvent";
+      }
+      console.error(JSON.stringify(entry));
+    } else {
+      console.error(`[${level.toUpperCase()}] ${message}`);
+    }
 
     // If server is set and supports logging notifications, send them
     if (this.server && typeof this.server.notification === 'function') {
