@@ -9,7 +9,7 @@ import { jest } from '@jest/globals';
 const store = new Map<string, { value: string; expiry?: number }>();
 
 // Mock Redis before importing auth module
-const mockMultiExec = jest.fn(async () => [[null, 'OK']]);
+const mockMultiExec = jest.fn(async () => [[null, 'OK'], [null, 'OK'], [null, 1]]);
 const mockMultiSet = jest.fn().mockReturnThis();
 const mockMultiExpire = jest.fn().mockReturnThis();
 
@@ -112,7 +112,7 @@ describe('RedashOAuthProvider', () => {
     jest.clearAllMocks();
     mockMultiSet.mockReturnThis();
     mockMultiExpire.mockReturnThis();
-    mockMultiExec.mockResolvedValue([[null, 'OK']]);
+    mockMultiExec.mockResolvedValue([[null, 'OK'], [null, 'OK'], [null, 1]]);
     provider = new RedashOAuthProvider();
   });
 
@@ -323,6 +323,25 @@ describe('RedashOAuthProvider', () => {
         expect.stringContaining('Connection lost')
       );
     });
+
+    it('should throw when Redis pipeline partially fails', async () => {
+      store.set('redash-mcp:code:pipeline-fail', {
+        value: JSON.stringify(authCodeData),
+      });
+      mockMultiExec.mockResolvedValueOnce([
+        [null, 'OK'],
+        [new Error('READONLY') as any, null],
+        [null, 1],
+      ]);
+
+      const client = makeClient({ client_id: 'test-client-id' });
+      await expect(
+        provider.exchangeAuthorizationCode(client, 'pipeline-fail', undefined, 'http://localhost:3000/callback')
+      ).rejects.toThrow('Token exchange failed due to an internal error');
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Redis pipeline partially failed')
+      );
+    });
   });
 
   // --- Refresh token exchange ---
@@ -383,6 +402,25 @@ describe('RedashOAuthProvider', () => {
       ).rejects.toThrow('Token refresh failed due to an internal error');
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringContaining('Redis timeout')
+      );
+    });
+
+    it('should throw when Redis pipeline partially fails', async () => {
+      store.set('redash-mcp:refresh:rf-pipeline-fail', {
+        value: JSON.stringify({ clientId: 'test-client-id', redashApiKey: 'k' }),
+      });
+      mockMultiExec.mockResolvedValueOnce([
+        [null, 'OK'],
+        [new Error('READONLY') as any, null],
+        [null, 1],
+      ]);
+
+      const client = makeClient({ client_id: 'test-client-id' });
+      await expect(
+        provider.exchangeRefreshToken(client, 'rf-pipeline-fail')
+      ).rejects.toThrow('Token refresh failed due to an internal error');
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Redis pipeline partially failed')
       );
     });
   });

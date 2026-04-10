@@ -245,7 +245,10 @@ export class RedashOAuthProvider implements OAuthServerProvider {
         TTL_REFRESH_TOKEN
       );
       pipeline.expire(redisKey("client", client.client_id), TTL_CLIENT);
-      await pipeline.exec();
+      const results = await pipeline.exec();
+      if (!results || results.some(([err]) => err !== null)) {
+        throw new Error("Redis pipeline partially failed");
+      }
 
       logger.info(`Auth code exchanged for client ${client.client_id}`);
 
@@ -308,7 +311,10 @@ export class RedashOAuthProvider implements OAuthServerProvider {
         TTL_REFRESH_TOKEN
       );
       pipeline.expire(redisKey("client", client.client_id), TTL_CLIENT);
-      await pipeline.exec();
+      const results = await pipeline.exec();
+      if (!results || results.some(([err]) => err !== null)) {
+        throw new Error("Redis pipeline partially failed");
+      }
 
       logger.info(`Refresh token rotated for client ${client.client_id}`);
 
@@ -385,7 +391,7 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     try {
       // Atomically check and delete CSRF token
       const deleted = await redis.del(redisKey("csrf", csrfToken));
-      if (!deleted) {
+      if (deleted === 0) {
         logger.warning(`Authorization submit failed: invalid CSRF token for client ${clientId}`);
         res.status(403).send("Invalid or expired form submission. Please go back and try again.");
         return;

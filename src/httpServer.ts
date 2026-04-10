@@ -210,16 +210,15 @@ app.post("/mcp", combinedAuth, async (req, res) => {
   const redashApiKey = (req as any).redashApiKey as string;
   const start = Date.now();
 
-  try {
-    const redashClient = createRedashClient(redashApiKey);
-    const server = createServer(redashClient);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // stateless
-    });
+  const redashClient = createRedashClient(redashApiKey);
+  const server = createServer(redashClient);
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // stateless
+  });
 
+  try {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-    await server.close();
     log.debug(`MCP request processed in ${Date.now() - start}ms`);
   } catch (error) {
     log.error(
@@ -228,11 +227,17 @@ app.post("/mcp", combinedAuth, async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: "Internal server error" });
     }
+  } finally {
+    await server.close();
   }
 });
 
-// Reject GET/DELETE on /mcp
-app.all("/mcp", (_req, res) => {
+// Reject GET/DELETE on /mcp (explicit methods instead of app.all to avoid
+// accidentally catching POST if routes are reordered)
+app.get("/mcp", (_req, res) => {
+  res.status(405).json({ error: "Method not allowed. Use POST." });
+});
+app.delete("/mcp", (_req, res) => {
   res.status(405).json({ error: "Method not allowed. Use POST." });
 });
 
