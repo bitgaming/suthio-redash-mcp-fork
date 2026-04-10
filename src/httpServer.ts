@@ -26,6 +26,42 @@ const AUTH_TOKENS = (process.env.MCP_AUTH_TOKENS || "")
 
 const oauthProvider = new RedashOAuthProvider();
 
+// Optional basic auth gate for the OAuth authorization page.
+// When OAUTH_BASIC_AUTH_USER and OAUTH_BASIC_AUTH_PASS are set, the browser
+// will prompt for credentials before showing the API key form. This prevents
+// unauthenticated access to the authorization flow on public deployments.
+const BASIC_AUTH_USER = process.env.OAUTH_BASIC_AUTH_USER || "";
+const BASIC_AUTH_PASS = process.env.OAUTH_BASIC_AUTH_PASS || "";
+const basicAuthEnabled = BASIC_AUTH_USER.length > 0 && BASIC_AUTH_PASS.length > 0;
+
+function requireBasicAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  if (!basicAuthEnabled) {
+    next();
+    return;
+  }
+
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Basic ")) {
+    const decoded = Buffer.from(authHeader.slice(6), "base64").toString();
+    const [user, ...passParts] = decoded.split(":");
+    const pass = passParts.join(":"); // password may contain colons
+    if (user === BASIC_AUTH_USER && pass === BASIC_AUTH_PASS) {
+      next();
+      return;
+    }
+  }
+
+  res.setHeader("WWW-Authenticate", 'Basic realm="OAuth Authorization"');
+  res.status(401).send("Unauthorized");
+}
+
+// Gate the OAuth authorization page with basic auth (before mcpAuthRouter handles it)
+app.use("/authorize", requireBasicAuth);
+
 // Mount OAuth discovery & token endpoints (public, no auth required)
 app.use(
   mcpAuthRouter({
@@ -37,10 +73,11 @@ app.use(
   })
 );
 
-// Handle the OAuth authorization form submission
+// Handle the OAuth authorization form submission (basic auth gated)
 app.use("/authorize/submit", express.urlencoded({ extended: false }));
 app.post(
   "/authorize/submit",
+  requireBasicAuth,
   (req: express.Request, res: express.Response) => {
     const { client_id, redirect_uri, code_challenge, state, api_key } =
       req.body;
@@ -152,4 +189,9 @@ app.listen(PORT, () => {
       : "Legacy bearer auth disabled (no MCP_AUTH_TOKENS set)"
   );
   logger.info("OAuth 2.1 auth enabled for Claude Desktop Connectors");
+  logger.info(
+    basicAuthEnabled
+      ? "OAuth authorize page protected with basic auth"
+      : "OAuth authorize page is open (set OAUTH_BASIC_AUTH_USER and OAUTH_BASIC_AUTH_PASS to enable basic auth)"
+  );
 });
