@@ -66,10 +66,9 @@ function requireBasicAuth(
     if (colonIdx !== -1) {
       const user = decoded.substring(0, colonIdx);
       const pass = decoded.substring(colonIdx + 1);
-      const userMatch = user.length === BASIC_AUTH_USER.length &&
-        timingSafeEqual(Buffer.from(user), Buffer.from(BASIC_AUTH_USER));
-      const passMatch = pass.length === BASIC_AUTH_PASS.length &&
-        timingSafeEqual(Buffer.from(pass), Buffer.from(BASIC_AUTH_PASS));
+      // HMAC both sides to normalize buffer length, preventing timing leak
+      const userMatch = timingSafeEqual(hmacToken(user), hmacToken(BASIC_AUTH_USER));
+      const passMatch = timingSafeEqual(hmacToken(pass), hmacToken(BASIC_AUTH_PASS));
       if (userMatch && passMatch) {
         next();
         return;
