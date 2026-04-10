@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -6,7 +6,7 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createRedashClient } from "./redashClient.js";
 import { createServer } from "./index.js";
-import { logger, type LogContext } from "./logger.js";
+import { logger } from "./logger.js";
 import { RedashOAuthProvider, getRedashApiKeyFromAuth } from "./auth.js";
 import { isEncryptionEnabled } from "./crypto.js";
 import { connectRedis, redis } from "./redis.js";
@@ -15,22 +15,6 @@ const app = express();
 const TRUST_PROXY = process.env.TRUST_PROXY ?? "1";
 app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? parseInt(TRUST_PROXY, 10) : TRUST_PROXY);
 app.use(express.json());
-
-// Assign a request ID from incoming header or generate one
-app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
-  (req as any).requestId = (req.headers["x-request-id"] as string) || randomUUID();
-  next();
-});
-
-function reqLogger(req: express.Request) {
-  const ctx: LogContext = { requestId: (req as any).requestId };
-  return {
-    debug: (msg: string) => logger.debug(msg, ctx),
-    info: (msg: string) => logger.info(msg, ctx),
-    warning: (msg: string) => logger.warning(msg, ctx),
-    error: (msg: string) => logger.error(msg, ctx),
-  };
-}
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
@@ -93,7 +77,7 @@ function requireBasicAuth(
     }
   }
 
-  reqLogger(req).warning(`Basic auth failed for OAuth authorize from ${req.ip}`);
+  logger.warning(`Basic auth failed for OAuth authorize from ${req.ip}`);
   res.setHeader("WWW-Authenticate", 'Basic realm="OAuth Authorization"');
   res.status(401).send("Unauthorized");
 }
@@ -146,7 +130,6 @@ function combinedAuth(
   res: express.Response,
   next: express.NextFunction
 ): void {
-  const log = reqLogger(req);
   const authHeader = req.headers.authorization;
 
   // Try legacy auth: if the bearer token matches a configured MCP_AUTH_TOKEN,
@@ -157,7 +140,7 @@ function combinedAuth(
     if (isValidAuthToken(token)) {
       const apiKey = req.headers["x-redash-api-key"] as string | undefined;
       if (!apiKey) {
-        log.warning(`Legacy auth: missing X-Redash-API-Key header from ${req.ip}`);
+        logger.warning(`Legacy auth: missing X-Redash-API-Key header from ${req.ip}`);
         res.status(400).json({ error: "Missing X-Redash-API-Key header" });
         return;
       }
@@ -166,7 +149,7 @@ function combinedAuth(
       return;
     }
     legacyAuthAttempted = true;
-    log.warning(`Legacy auth: invalid bearer token from ${req.ip}`);
+    logger.warning(`Legacy auth: invalid bearer token from ${req.ip}`);
   }
 
   // Fall through to OAuth bearer auth.
@@ -175,14 +158,14 @@ function combinedAuth(
       if (legacyAuthAttempted) {
         // Token did not match legacy auth or OAuth — give a clear error
         // instead of confusing WWW-Authenticate headers.
-        log.warning(`Auth failed from ${req.ip}: token is neither a valid legacy token nor a valid OAuth token`);
+        logger.warning(`Auth failed from ${req.ip}: token is neither a valid legacy token nor a valid OAuth token`);
         res.status(401).json({
           error: "unauthorized",
           message: "Bearer token is not valid. Check that the token has not expired.",
         });
         return;
       }
-      log.warning(`OAuth auth failed from ${req.ip}: ${err instanceof Error ? err.message : String(err)}`);
+      logger.warning(`OAuth auth failed from ${req.ip}: ${err instanceof Error ? err.message : String(err)}`);
       next(err);
       return;
     }
@@ -193,7 +176,7 @@ function combinedAuth(
       }
       next();
     } catch (e) {
-      log.warning(`OAuth auth: could not extract API key from token from ${req.ip}`);
+      logger.warning(`OAuth auth: could not extract API key from token from ${req.ip}`);
       res.status(401).json({ error: "Could not extract Redash API key from token" });
     }
   });
@@ -201,24 +184,6 @@ function combinedAuth(
 
 // --- Routes ---
 
-// Liveness probe — is the process alive? Always 200 unless truly wedged.
-// Use this for Kubernetes livenessProbe so a Redis outage doesn't cascade
-// into pod restarts.
-app.get("/health/live", (_req, res) => {
-  res.json({ status: "ok" });
-});
-
-// Readiness probe — can this pod serve traffic? Checks Redis.
-// Use this for Kubernetes readinessProbe: a 503 removes the pod from the
-// Service (stops traffic) but does NOT restart it.
-app.get("/health/ready", (_req, res) => {
-  const redisOk = redis.status === "ready";
-  const status = redisOk ? "ok" : "degraded";
-  res.status(redisOk ? 200 : 503).json({ status, redis: redis.status });
-});
-
-// General health — returns status but always 200, safe for load balancers
-// that don't distinguish liveness/readiness.
 app.get("/health", (_req, res) => {
   const redisOk = redis.status === "ready";
   res.json({ status: redisOk ? "ok" : "degraded", redis: redis.status });
@@ -226,9 +191,7 @@ app.get("/health", (_req, res) => {
 
 // MCP endpoint — stateless: each POST creates a fresh server + transport
 app.post("/mcp", combinedAuth, async (req, res) => {
-  const log = reqLogger(req);
   const redashApiKey = (req as any).redashApiKey as string;
-  const start = Date.now();
 
   const redashClient = createRedashClient(redashApiKey);
   const server = createServer(redashClient);
@@ -239,9 +202,8 @@ app.post("/mcp", combinedAuth, async (req, res) => {
   try {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-    log.debug(`MCP request processed in ${Date.now() - start}ms`);
   } catch (error) {
-    log.error(
+    logger.error(
       `MCP request error: ${error instanceof Error ? error.message : String(error)}`
     );
     if (!res.headersSent) {
