@@ -31,7 +31,7 @@ function escapeHtml(str: string): string {
 // TTLs in seconds
 const TTL_CSRF = 10 * 60;               // 10 minutes
 const TTL_AUTH_CODE = 5 * 60;            // 5 minutes
-const TTL_ACCESS_TOKEN = 3600 * 24 * 7;  // 7 days — sliding, refreshed on each use
+const TTL_ACCESS_TOKEN = 3600;             // 1 hour — sliding, refreshed on each use
 const TTL_REFRESH_TOKEN = 3600 * 24 * 7; // 7 days — sliding, refreshed on rotation
 const TTL_CLIENT = 3600 * 24 * 90;       // 90 days, refreshed on use
 
