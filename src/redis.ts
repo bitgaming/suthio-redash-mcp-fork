@@ -18,10 +18,14 @@ export async function connectRedis(): Promise<void> {
 }
 
 const KEY_PREFIX = "redash-mcp:";
+const SAFE_ID = /^[a-zA-Z0-9\-_]{1,128}$/;
 
 export function redisKey(
   store: "client" | "csrf" | "code" | "token" | "refresh",
   id: string
 ): string {
+  if (!SAFE_ID.test(id)) {
+    throw new Error("Invalid Redis key id");
+  }
   return `${KEY_PREFIX}${store}:${id}`;
 }
