@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID } from "node:crypto";
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -6,13 +6,30 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createRedashClient } from "./redashClient.js";
 import { createServer } from "./index.js";
-import { logger } from "./logger.js";
+import { logger, type LogContext } from "./logger.js";
 import { RedashOAuthProvider, getRedashApiKeyFromAuth } from "./auth.js";
 import { connectRedis, redis } from "./redis.js";
 
 const app = express();
-app.set("trust proxy", true);
+const TRUST_PROXY = process.env.TRUST_PROXY ?? "1";
+app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? parseInt(TRUST_PROXY, 10) : TRUST_PROXY);
 app.use(express.json());
+
+// Assign a request ID from incoming header or generate one
+app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
+  (req as any).requestId = (req.headers["x-request-id"] as string) || randomUUID();
+  next();
+});
+
+function reqLogger(req: express.Request) {
+  const ctx: LogContext = { requestId: (req as any).requestId };
+  return {
+    debug: (msg: string) => logger.debug(msg, ctx),
+    info: (msg: string) => logger.info(msg, ctx),
+    warning: (msg: string) => logger.warning(msg, ctx),
+    error: (msg: string) => logger.error(msg, ctx),
+  };
+}
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
@@ -72,7 +89,7 @@ function requireBasicAuth(
     }
   }
 
-  logger.warning(`Basic auth failed for OAuth authorize from ${req.ip}`);
+  reqLogger(req).warning(`Basic auth failed for OAuth authorize from ${req.ip}`);
   res.setHeader("WWW-Authenticate", 'Basic realm="OAuth Authorization"');
   res.status(401).send("Unauthorized");
 }
@@ -125,16 +142,18 @@ function combinedAuth(
   res: express.Response,
   next: express.NextFunction
 ): void {
+  const log = reqLogger(req);
   const authHeader = req.headers.authorization;
 
   // Try legacy auth: if the bearer token matches a configured MCP_AUTH_TOKEN,
   // use the X-Redash-API-Key header for the Redash API key.
+  let legacyAuthAttempted = false;
   if (authHeader?.startsWith("Bearer ") && AUTH_TOKENS.length > 0) {
     const token = authHeader.slice(7);
     if (isValidAuthToken(token)) {
       const apiKey = req.headers["x-redash-api-key"] as string | undefined;
       if (!apiKey) {
-        logger.warning(`Legacy auth: missing X-Redash-API-Key header from ${req.ip}`);
+        log.warning(`Legacy auth: missing X-Redash-API-Key header from ${req.ip}`);
         res.status(400).json({ error: "Missing X-Redash-API-Key header" });
         return;
       }
@@ -142,15 +161,24 @@ function combinedAuth(
       next();
       return;
     }
-    logger.warning(`Legacy auth: invalid bearer token from ${req.ip}`);
+    legacyAuthAttempted = true;
+    log.warning(`Legacy auth: invalid bearer token from ${req.ip}`);
   }
 
   // Fall through to OAuth bearer auth.
-  // If no token or unknown token, the SDK middleware handles 401 with
-  // proper WWW-Authenticate headers to trigger the OAuth discovery flow.
   oauthBearerAuth(req, res, (err?: any) => {
     if (err) {
-      logger.warning(`OAuth auth failed from ${req.ip}: ${err instanceof Error ? err.message : String(err)}`);
+      if (legacyAuthAttempted) {
+        // Token did not match legacy auth or OAuth — give a clear error
+        // instead of confusing WWW-Authenticate headers.
+        log.warning(`Auth failed from ${req.ip}: token is neither a valid legacy token nor a valid OAuth token`);
+        res.status(401).json({
+          error: "unauthorized",
+          message: "Bearer token is not valid. Check that the token has not expired.",
+        });
+        return;
+      }
+      log.warning(`OAuth auth failed from ${req.ip}: ${err instanceof Error ? err.message : String(err)}`);
       next(err);
       return;
     }
@@ -161,7 +189,7 @@ function combinedAuth(
       }
       next();
     } catch (e) {
-      logger.warning(`OAuth auth: could not extract API key from token from ${req.ip}`);
+      log.warning(`OAuth auth: could not extract API key from token from ${req.ip}`);
       res.status(401).json({ error: "Could not extract Redash API key from token" });
     }
   });
@@ -178,7 +206,9 @@ app.get("/health", (_req, res) => {
 
 // MCP endpoint — stateless: each POST creates a fresh server + transport
 app.post("/mcp", combinedAuth, async (req, res) => {
+  const log = reqLogger(req);
   const redashApiKey = (req as any).redashApiKey as string;
+  const start = Date.now();
 
   try {
     const redashClient = createRedashClient(redashApiKey);
@@ -190,8 +220,9 @@ app.post("/mcp", combinedAuth, async (req, res) => {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
     await server.close();
+    log.debug(`MCP request processed in ${Date.now() - start}ms`);
   } catch (error) {
-    logger.error(
+    log.error(
       `MCP request error: ${error instanceof Error ? error.message : String(error)}`
     );
     if (!res.headersSent) {
