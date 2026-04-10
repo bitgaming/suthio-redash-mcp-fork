@@ -23,6 +23,14 @@ const AUTH_TOKENS = (process.env.MCP_AUTH_TOKENS || "")
   .map((t) => t.trim())
   .filter(Boolean);
 
+function isValidAuthToken(token: string): boolean {
+  return AUTH_TOKENS.some(
+    (t) =>
+      t.length === token.length &&
+      timingSafeEqual(Buffer.from(t), Buffer.from(token))
+  );
+}
+
 // --- OAuth auth (Claude Desktop Connectors) ---
 
 const oauthProvider = new RedashOAuthProvider();
@@ -63,6 +71,7 @@ function requireBasicAuth(
     }
   }
 
+  logger.warning(`Basic auth failed for OAuth authorize from ${req.ip}`);
   res.setHeader("WWW-Authenticate", 'Basic realm="OAuth Authorization"');
   res.status(401).send("Unauthorized");
 }
@@ -120,9 +129,10 @@ function combinedAuth(
   // use the X-Redash-API-Key header for the Redash API key.
   if (authHeader?.startsWith("Bearer ") && AUTH_TOKENS.length > 0) {
     const token = authHeader.slice(7);
-    if (AUTH_TOKENS.includes(token)) {
+    if (isValidAuthToken(token)) {
       const apiKey = req.headers["x-redash-api-key"] as string | undefined;
       if (!apiKey) {
+        logger.warning(`Legacy auth: missing X-Redash-API-Key header from ${req.ip}`);
         res.status(400).json({ error: "Missing X-Redash-API-Key header" });
         return;
       }
@@ -130,6 +140,7 @@ function combinedAuth(
       next();
       return;
     }
+    logger.warning(`Legacy auth: invalid bearer token from ${req.ip}`);
   }
 
   // Fall through to OAuth bearer auth.
@@ -137,6 +148,7 @@ function combinedAuth(
   // proper WWW-Authenticate headers to trigger the OAuth discovery flow.
   oauthBearerAuth(req, res, (err?: any) => {
     if (err) {
+      logger.warning(`OAuth auth failed from ${req.ip}: ${err instanceof Error ? err.message : String(err)}`);
       next(err);
       return;
     }
@@ -147,6 +159,7 @@ function combinedAuth(
       }
       next();
     } catch (e) {
+      logger.warning(`OAuth auth: could not extract API key from token from ${req.ip}`);
       res.status(401).json({ error: "Could not extract Redash API key from token" });
     }
   });
