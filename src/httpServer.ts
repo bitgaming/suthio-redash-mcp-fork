@@ -8,6 +8,7 @@ import { createRedashClient } from "./redashClient.js";
 import { createServer } from "./index.js";
 import { logger, type LogContext } from "./logger.js";
 import { RedashOAuthProvider, getRedashApiKeyFromAuth } from "./auth.js";
+import { isEncryptionEnabled } from "./crypto.js";
 import { connectRedis, redis } from "./redis.js";
 
 const app = express();
@@ -256,6 +257,11 @@ async function main() {
         : "Legacy bearer auth disabled (no MCP_AUTH_TOKENS set)"
     );
     logger.info("OAuth 2.1 auth enabled for Claude Desktop Connectors");
+    logger.info(
+      isEncryptionEnabled()
+        ? "API key encryption at rest enabled"
+        : "WARNING: MCP_ENCRYPTION_KEY not set — API keys stored unencrypted in Redis"
+    );
     logger.info(
       basicAuthEnabled
         ? "OAuth authorize page protected with basic auth"

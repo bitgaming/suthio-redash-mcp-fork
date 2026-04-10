@@ -10,6 +10,7 @@ import type {
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { logger } from "./logger.js";
 import { redis, redisKey } from "./redis.js";
+import { encrypt, decrypt } from "./crypto.js";
 
 class OAuthValidationError extends Error {
   constructor(message: string) {
@@ -221,14 +222,15 @@ export class RedashOAuthProvider implements OAuthServerProvider {
 
       const accessToken = randomBytes(32).toString("hex");
       const refreshToken = randomBytes(32).toString("hex");
+      const decryptedApiKey = decrypt(code.redashApiKey);
 
       const tokenData: AccessTokenData = {
         clientId: client.client_id,
-        redashApiKey: code.redashApiKey,
+        redashApiKey: encrypt(decryptedApiKey),
       };
       const refreshData: RefreshTokenData = {
         clientId: client.client_id,
-        redashApiKey: code.redashApiKey,
+        redashApiKey: encrypt(decryptedApiKey),
       };
 
       const pipeline = redis.multi();
@@ -286,14 +288,15 @@ export class RedashOAuthProvider implements OAuthServerProvider {
 
       const accessToken = randomBytes(32).toString("hex");
       const newRefreshToken = randomBytes(32).toString("hex");
+      const decryptedApiKey = decrypt(stored.redashApiKey);
 
       const tokenData: AccessTokenData = {
         clientId: client.client_id,
-        redashApiKey: stored.redashApiKey,
+        redashApiKey: encrypt(decryptedApiKey),
       };
       const refreshData: RefreshTokenData = {
         clientId: client.client_id,
-        redashApiKey: stored.redashApiKey,
+        redashApiKey: encrypt(decryptedApiKey),
       };
 
       // Atomic write: all-or-nothing to prevent partial state on failure
@@ -354,7 +357,7 @@ export class RedashOAuthProvider implements OAuthServerProvider {
         clientId: stored.clientId,
         scopes: [],
         expiresAt: Math.floor(Date.now() / 1000) + TTL_ACCESS_TOKEN,
-        extra: { redashApiKey: stored.redashApiKey },
+        extra: { redashApiKey: decrypt(stored.redashApiKey) },
       };
     } catch (error) {
       if (error instanceof OAuthValidationError) throw error;
@@ -417,7 +420,7 @@ export class RedashOAuthProvider implements OAuthServerProvider {
         clientId,
         codeChallenge,
         redirectUri,
-        redashApiKey,
+        redashApiKey: encrypt(redashApiKey),
         state,
       };
       await redis.set(
