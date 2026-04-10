@@ -1,4 +1,4 @@
-import { timingSafeEqual, randomUUID } from "node:crypto";
+import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -41,12 +41,15 @@ const AUTH_TOKENS = (process.env.MCP_AUTH_TOKENS || "")
   .map((t) => t.trim())
   .filter(Boolean);
 
+// HMAC both sides before comparing so the buffers are always 32 bytes,
+// eliminating the timing leak from the length check that timingSafeEqual requires.
+function hmacToken(token: string): Buffer {
+  return createHmac("sha256", "redash-mcp-auth-compare").update(token).digest();
+}
+
 function isValidAuthToken(token: string): boolean {
-  return AUTH_TOKENS.some(
-    (t) =>
-      t.length === token.length &&
-      timingSafeEqual(Buffer.from(t), Buffer.from(token))
-  );
+  const tokenMac = hmacToken(token);
+  return AUTH_TOKENS.some((t) => timingSafeEqual(hmacToken(t), tokenMac));
 }
 
 // --- OAuth auth (Claude Desktop Connectors) ---
