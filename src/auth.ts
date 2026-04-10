@@ -11,6 +11,13 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { logger } from "./logger.js";
 import { redis, redisKey } from "./redis.js";
 
+class OAuthValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OAuthValidationError";
+  }
+}
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -138,8 +145,8 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     h1 { font-size: 1.4em; margin: 0 0 8px; }
     p { color: #666; font-size: 0.9em; margin: 0 0 24px; }
     label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.9em; }
-    input[type="text"] { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; box-sizing: border-box; }
-    input[type="text"]:focus { outline: none; border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,0.15); }
+    input[type="password"] { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; box-sizing: border-box; }
+    input[type="password"]:focus { outline: none; border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,0.15); }
     button { width: 100%; padding: 12px; background: #4a90d9; color: white; border: none; border-radius: 8px; font-size: 1em; font-weight: 600; cursor: pointer; margin-top: 20px; }
     button:hover { background: #3a7bc8; }
     .hint { font-size: 0.8em; color: #999; margin-top: 6px; }
@@ -157,7 +164,7 @@ export class RedashOAuthProvider implements OAuthServerProvider {
       <input type="hidden" name="code_challenge" value="${escapeHtml(params.codeChallenge)}">
       <input type="hidden" name="state" value="${escapeHtml(params.state || "")}">
       <label for="api_key">Redash API Key</label>
-      <input type="text" id="api_key" name="api_key" placeholder="Enter your Redash API key" required autofocus>
+      <input type="password" id="api_key" name="api_key" placeholder="Enter your Redash API key" required autofocus>
       <p class="hint">Find your API key in Redash: Profile icon (bottom-left) > API Key</p>
       <button type="submit">Authorize</button>
     </form>
@@ -172,10 +179,19 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     _client: OAuthClientInformationFull,
     authorizationCode: string
   ): Promise<string> {
-    const data = await redis.get(redisKey("code", authorizationCode));
-    if (!data) throw new Error("Invalid authorization code");
-    const code: AuthCodeData = JSON.parse(data);
-    return code.codeChallenge;
+    try {
+      const data = await redis.get(redisKey("code", authorizationCode));
+      if (!data) {
+        logger.warning("PKCE challenge requested for invalid auth code");
+        throw new OAuthValidationError("Invalid authorization code");
+      }
+      const code: AuthCodeData = JSON.parse(data);
+      return code.codeChallenge;
+    } catch (error) {
+      if (error instanceof OAuthValidationError) throw error;
+      logger.error(`challengeForAuthorizationCode failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error("Failed to retrieve authorization code challenge");
+    }
   }
 
   async exchangeAuthorizationCode(
@@ -184,136 +200,177 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     _codeVerifier?: string,
     redirectUri?: string
   ): Promise<OAuthTokens> {
-    const key = redisKey("code", authorizationCode);
-    const data = await redis.get(key);
-    if (!data) throw new Error("Invalid authorization code");
-    const code: AuthCodeData = JSON.parse(data);
+    try {
+      const key = redisKey("code", authorizationCode);
+      // Atomic read-and-delete: prevents a concurrent request from reusing the same code
+      const data = await redis.getdel(key);
+      if (!data) {
+        logger.warning(`Auth code exchange failed: invalid code for client ${client.client_id}`);
+        throw new OAuthValidationError("Invalid authorization code");
+      }
+      const code: AuthCodeData = JSON.parse(data);
 
-    if (code.clientId !== client.client_id)
-      throw new Error("Client mismatch");
-    if (redirectUri && code.redirectUri !== redirectUri)
-      throw new Error("redirect_uri mismatch");
+      if (code.clientId !== client.client_id) {
+        logger.warning(`Auth code exchange failed: client mismatch (expected ${code.clientId}, got ${client.client_id})`);
+        throw new OAuthValidationError("Client mismatch");
+      }
+      if (redirectUri && code.redirectUri !== redirectUri) {
+        logger.warning(`Auth code exchange failed: redirect_uri mismatch for client ${client.client_id}`);
+        throw new OAuthValidationError("redirect_uri mismatch");
+      }
 
-    // Delete auth code (single-use)
-    await redis.del(key);
+      const accessToken = randomBytes(32).toString("hex");
+      const refreshToken = randomBytes(32).toString("hex");
 
-    const accessToken = randomBytes(32).toString("hex");
-    const refreshToken = randomBytes(32).toString("hex");
+      const tokenData: AccessTokenData = {
+        clientId: client.client_id,
+        redashApiKey: code.redashApiKey,
+      };
+      const refreshData: RefreshTokenData = {
+        clientId: client.client_id,
+        redashApiKey: code.redashApiKey,
+      };
 
-    const tokenData: AccessTokenData = {
-      clientId: client.client_id,
-      redashApiKey: code.redashApiKey,
-    };
-    const refreshData: RefreshTokenData = {
-      clientId: client.client_id,
-      redashApiKey: code.redashApiKey,
-    };
-
-    await Promise.all([
-      redis.set(
+      const pipeline = redis.multi();
+      pipeline.set(
         redisKey("token", accessToken),
         JSON.stringify(tokenData),
         "EX",
         TTL_ACCESS_TOKEN
-      ),
-      redis.set(
+      );
+      pipeline.set(
         redisKey("refresh", refreshToken),
         JSON.stringify(refreshData),
         "EX",
         TTL_REFRESH_TOKEN
-      ),
-      // Refresh client TTL on use
-      redis.expire(redisKey("client", client.client_id), TTL_CLIENT),
-    ]);
+      );
+      pipeline.expire(redisKey("client", client.client_id), TTL_CLIENT);
+      await pipeline.exec();
 
-    return {
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: TTL_ACCESS_TOKEN,
-      refresh_token: refreshToken,
-    };
+      logger.info(`Auth code exchanged for client ${client.client_id}`);
+
+      return {
+        access_token: accessToken,
+        token_type: "Bearer",
+        expires_in: TTL_ACCESS_TOKEN,
+        refresh_token: refreshToken,
+      };
+    } catch (error) {
+      if (error instanceof OAuthValidationError) throw error;
+      logger.error(`exchangeAuthorizationCode failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error("Token exchange failed due to an internal error");
+    }
   }
 
   async exchangeRefreshToken(
     client: OAuthClientInformationFull,
     refreshToken: string
   ): Promise<OAuthTokens> {
-    const key = redisKey("refresh", refreshToken);
-    const data = await redis.get(key);
-    if (!data) throw new Error("Invalid refresh token");
-    const stored: RefreshTokenData = JSON.parse(data);
+    try {
+      const key = redisKey("refresh", refreshToken);
+      // Atomic read-and-delete: prevents concurrent reuse of the same refresh token
+      const data = await redis.getdel(key);
+      if (!data) {
+        logger.warning(`Refresh token exchange failed: invalid token for client ${client.client_id}`);
+        throw new OAuthValidationError("Invalid refresh token");
+      }
+      const stored: RefreshTokenData = JSON.parse(data);
 
-    if (stored.clientId !== client.client_id)
-      throw new Error("Client mismatch");
+      if (stored.clientId !== client.client_id) {
+        logger.warning(`Refresh token exchange failed: client mismatch (expected ${stored.clientId}, got ${client.client_id})`);
+        throw new OAuthValidationError("Client mismatch");
+      }
 
-    const accessToken = randomBytes(32).toString("hex");
-    const newRefreshToken = randomBytes(32).toString("hex");
+      const accessToken = randomBytes(32).toString("hex");
+      const newRefreshToken = randomBytes(32).toString("hex");
 
-    const tokenData: AccessTokenData = {
-      clientId: client.client_id,
-      redashApiKey: stored.redashApiKey,
-    };
-    const refreshData: RefreshTokenData = {
-      clientId: client.client_id,
-      redashApiKey: stored.redashApiKey,
-    };
+      const tokenData: AccessTokenData = {
+        clientId: client.client_id,
+        redashApiKey: stored.redashApiKey,
+      };
+      const refreshData: RefreshTokenData = {
+        clientId: client.client_id,
+        redashApiKey: stored.redashApiKey,
+      };
 
-    await Promise.all([
-      // Delete old refresh token
-      redis.del(key),
-      redis.set(
+      // Atomic write: all-or-nothing to prevent partial state on failure
+      const pipeline = redis.multi();
+      pipeline.set(
         redisKey("token", accessToken),
         JSON.stringify(tokenData),
         "EX",
         TTL_ACCESS_TOKEN
-      ),
-      redis.set(
+      );
+      pipeline.set(
         redisKey("refresh", newRefreshToken),
         JSON.stringify(refreshData),
         "EX",
         TTL_REFRESH_TOKEN
-      ),
-      // Refresh client TTL on use
-      redis.expire(redisKey("client", client.client_id), TTL_CLIENT),
-    ]);
+      );
+      pipeline.expire(redisKey("client", client.client_id), TTL_CLIENT);
+      await pipeline.exec();
 
-    return {
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: TTL_ACCESS_TOKEN,
-      refresh_token: newRefreshToken,
-    };
+      logger.info(`Refresh token rotated for client ${client.client_id}`);
+
+      return {
+        access_token: accessToken,
+        token_type: "Bearer",
+        expires_in: TTL_ACCESS_TOKEN,
+        refresh_token: newRefreshToken,
+      };
+    } catch (error) {
+      if (error instanceof OAuthValidationError) throw error;
+      logger.error(`exchangeRefreshToken failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error("Token refresh failed due to an internal error");
+    }
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const key = redisKey("token", token);
-    const data = await redis.get(key);
-    if (!data) throw new Error("Invalid access token");
-    const stored: AccessTokenData = JSON.parse(data);
+    try {
+      const key = redisKey("token", token);
+      const data = await redis.get(key);
+      if (!data) {
+        logger.warning("Access token verification failed: invalid token");
+        throw new OAuthValidationError("Invalid access token");
+      }
+      const stored: AccessTokenData = JSON.parse(data);
 
-    // Sliding expiry: reset TTL on every successful verification
-    await Promise.all([
-      redis.expire(key, TTL_ACCESS_TOKEN),
-      redis.expire(redisKey("client", stored.clientId), TTL_CLIENT),
-    ]);
+      // Sliding expiry: reset TTL on every successful verification
+      await Promise.all([
+        redis.expire(key, TTL_ACCESS_TOKEN),
+        redis.expire(redisKey("client", stored.clientId), TTL_CLIENT),
+      ]);
 
-    return {
-      token,
-      clientId: stored.clientId,
-      scopes: [],
-      expiresAt: Math.floor(Date.now() / 1000) + TTL_ACCESS_TOKEN,
-      extra: { redashApiKey: stored.redashApiKey },
-    };
+      logger.debug(`Access token verified for client ${stored.clientId}`);
+
+      return {
+        token,
+        clientId: stored.clientId,
+        scopes: [],
+        expiresAt: Math.floor(Date.now() / 1000) + TTL_ACCESS_TOKEN,
+        extra: { redashApiKey: stored.redashApiKey },
+      };
+    } catch (error) {
+      if (error instanceof OAuthValidationError) throw error;
+      logger.error(`verifyAccessToken failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error("Token verification failed due to an internal error");
+    }
   }
 
   async revokeToken(
-    _client: OAuthClientInformationFull,
+    client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest
   ): Promise<void> {
-    await Promise.all([
-      redis.del(redisKey("token", request.token)),
-      redis.del(redisKey("refresh", request.token)),
-    ]);
+    try {
+      await Promise.all([
+        redis.del(redisKey("token", request.token)),
+        redis.del(redisKey("refresh", request.token)),
+      ]);
+      logger.info(`Token revoked for client ${client.client_id}`);
+    } catch (error) {
+      logger.error(`revokeToken failed: ${error instanceof Error ? error.message : String(error)}`);
+      // Revocation is best-effort per RFC 7009 — do not throw
+    }
   }
 
   async handleAuthorizeSubmit(
@@ -325,45 +382,57 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     redashApiKey: string,
     res: Response
   ): Promise<void> {
-    // Atomically check and delete CSRF token
-    const deleted = await redis.del(redisKey("csrf", csrfToken));
-    if (!deleted) {
-      res.status(403).send("Invalid or expired form submission. Please go back and try again.");
-      return;
+    try {
+      // Atomically check and delete CSRF token
+      const deleted = await redis.del(redisKey("csrf", csrfToken));
+      if (!deleted) {
+        logger.warning(`Authorization submit failed: invalid CSRF token for client ${clientId}`);
+        res.status(403).send("Invalid or expired form submission. Please go back and try again.");
+        return;
+      }
+
+      const clientData = await redis.get(redisKey("client", clientId));
+      if (!clientData) {
+        logger.warning(`Authorization submit failed: unknown client ${clientId}`);
+        res.status(400).send("Invalid client_id");
+        return;
+      }
+      const client: OAuthClientInformationFull = JSON.parse(clientData);
+
+      const registeredUris = client.redirect_uris || [];
+      if (!registeredUris.some((uri) => uri.toString() === redirectUri)) {
+        logger.warning(`Authorization submit failed: invalid redirect_uri for client ${clientId}`);
+        res.status(400).send("Invalid redirect_uri");
+        return;
+      }
+
+      const code = randomBytes(16).toString("hex");
+      const codeData: AuthCodeData = {
+        clientId,
+        codeChallenge,
+        redirectUri,
+        redashApiKey,
+        state,
+      };
+      await redis.set(
+        redisKey("code", code),
+        JSON.stringify(codeData),
+        "EX",
+        TTL_AUTH_CODE
+      );
+
+      logger.info(`Auth code issued for client ${clientId}`);
+
+      const url = new URL(redirectUri);
+      url.searchParams.set("code", code);
+      if (state) url.searchParams.set("state", state);
+      res.redirect(302, url.toString());
+    } catch (error) {
+      logger.error(`handleAuthorizeSubmit failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (!res.headersSent) {
+        res.status(500).send("Internal server error");
+      }
     }
-
-    const clientData = await redis.get(redisKey("client", clientId));
-    if (!clientData) {
-      res.status(400).send("Invalid client_id");
-      return;
-    }
-    const client: OAuthClientInformationFull = JSON.parse(clientData);
-
-    const registeredUris = client.redirect_uris || [];
-    if (!registeredUris.some((uri) => uri.toString() === redirectUri)) {
-      res.status(400).send("Invalid redirect_uri");
-      return;
-    }
-
-    const code = randomBytes(16).toString("hex");
-    const codeData: AuthCodeData = {
-      clientId,
-      codeChallenge,
-      redirectUri,
-      redashApiKey,
-      state,
-    };
-    await redis.set(
-      redisKey("code", code),
-      JSON.stringify(codeData),
-      "EX",
-      TTL_AUTH_CODE
-    );
-
-    const url = new URL(redirectUri);
-    url.searchParams.set("code", code);
-    if (state) url.searchParams.set("state", state);
-    res.redirect(302, url.toString());
   }
 }
 

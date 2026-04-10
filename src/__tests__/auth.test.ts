@@ -9,6 +9,10 @@ import { jest } from '@jest/globals';
 const store = new Map<string, { value: string; expiry?: number }>();
 
 // Mock Redis before importing auth module
+const mockMultiExec = jest.fn(async () => [[null, 'OK']]);
+const mockMultiSet = jest.fn().mockReturnThis();
+const mockMultiExpire = jest.fn().mockReturnThis();
+
 jest.mock('../redis.js', () => ({
   redis: {
     get: jest.fn(async (key: string) => {
@@ -19,6 +23,17 @@ jest.mock('../redis.js', () => ({
         return null;
       }
       return entry.value;
+    }),
+    getdel: jest.fn(async (key: string) => {
+      const entry = store.get(key);
+      if (!entry) return null;
+      if (entry.expiry && Date.now() > entry.expiry) {
+        store.delete(key);
+        return null;
+      }
+      const value = entry.value;
+      store.delete(key);
+      return value;
     }),
     set: jest.fn(async (key: string, value: string, _ex?: string, ttl?: number) => {
       store.set(key, {
@@ -33,6 +48,11 @@ jest.mock('../redis.js', () => ({
     expire: jest.fn(async (_key: string, _ttl: number) => {
       return 1;
     }),
+    multi: jest.fn(() => ({
+      set: mockMultiSet,
+      expire: mockMultiExpire,
+      exec: mockMultiExec,
+    })),
     status: 'ready',
   },
   redisKey: jest.fn(
@@ -90,6 +110,9 @@ describe('RedashOAuthProvider', () => {
   beforeEach(() => {
     store.clear();
     jest.clearAllMocks();
+    mockMultiSet.mockReturnThis();
+    mockMultiExpire.mockReturnThis();
+    mockMultiExec.mockResolvedValue([[null, 'OK']]);
     provider = new RedashOAuthProvider();
   });
 
@@ -239,8 +262,11 @@ describe('RedashOAuthProvider', () => {
       expect(tokens.refresh_token).toBeDefined();
       expect(tokens.token_type).toBe('Bearer');
       expect(tokens.expires_in).toBeGreaterThan(0);
-      // Auth code should be deleted (single-use)
-      expect(redis.del).toHaveBeenCalledWith('redash-mcp:code:valid-code');
+      // Auth code should be atomically consumed via getdel
+      expect(redis.getdel).toHaveBeenCalledWith('redash-mcp:code:valid-code');
+      // Token writes should use a multi/exec transaction
+      expect(redis.multi).toHaveBeenCalled();
+      expect(mockMultiExec).toHaveBeenCalled();
     });
 
     it('should reject invalid auth code', async () => {
@@ -248,6 +274,9 @@ describe('RedashOAuthProvider', () => {
       await expect(
         provider.exchangeAuthorizationCode(client, 'bogus-code')
       ).rejects.toThrow('Invalid authorization code');
+      expect(logger.warning).toHaveBeenCalledWith(
+        expect.stringContaining('invalid code')
+      );
     });
 
     it('should reject client mismatch', async () => {
@@ -259,6 +288,9 @@ describe('RedashOAuthProvider', () => {
       await expect(
         provider.exchangeAuthorizationCode(wrongClient, 'code-1')
       ).rejects.toThrow('Client mismatch');
+      expect(logger.warning).toHaveBeenCalledWith(
+        expect.stringContaining('client mismatch')
+      );
     });
 
     it('should reject redirect_uri mismatch', async () => {
@@ -275,6 +307,21 @@ describe('RedashOAuthProvider', () => {
           'http://localhost:9999/other'
         )
       ).rejects.toThrow('redirect_uri mismatch');
+      expect(logger.warning).toHaveBeenCalledWith(
+        expect.stringContaining('redirect_uri mismatch')
+      );
+    });
+
+    it('should handle Redis errors gracefully', async () => {
+      (redis.getdel as jest.Mock<any>).mockRejectedValueOnce(new Error('Connection lost'));
+
+      const client = makeClient();
+      await expect(
+        provider.exchangeAuthorizationCode(client, 'any-code')
+      ).rejects.toThrow('Token exchange failed due to an internal error');
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Connection lost')
+      );
     });
   });
 
@@ -296,8 +343,11 @@ describe('RedashOAuthProvider', () => {
       expect(tokens.access_token).toBeDefined();
       expect(tokens.refresh_token).toBeDefined();
       expect(tokens.refresh_token).not.toBe('old-refresh');
-      // Old refresh token should be deleted
-      expect(redis.del).toHaveBeenCalledWith('redash-mcp:refresh:old-refresh');
+      // Old refresh token should be atomically consumed via getdel
+      expect(redis.getdel).toHaveBeenCalledWith('redash-mcp:refresh:old-refresh');
+      // Token writes should use a multi/exec transaction
+      expect(redis.multi).toHaveBeenCalled();
+      expect(mockMultiExec).toHaveBeenCalled();
     });
 
     it('should reject invalid refresh token', async () => {
@@ -305,6 +355,9 @@ describe('RedashOAuthProvider', () => {
       await expect(
         provider.exchangeRefreshToken(client, 'nonexistent')
       ).rejects.toThrow('Invalid refresh token');
+      expect(logger.warning).toHaveBeenCalledWith(
+        expect.stringContaining('invalid token')
+      );
     });
 
     it('should reject client mismatch on refresh', async () => {
@@ -316,6 +369,21 @@ describe('RedashOAuthProvider', () => {
       await expect(
         provider.exchangeRefreshToken(wrongClient, 'rf-1')
       ).rejects.toThrow('Client mismatch');
+      expect(logger.warning).toHaveBeenCalledWith(
+        expect.stringContaining('client mismatch')
+      );
+    });
+
+    it('should handle Redis errors gracefully', async () => {
+      (redis.getdel as jest.Mock<any>).mockRejectedValueOnce(new Error('Redis timeout'));
+
+      const client = makeClient();
+      await expect(
+        provider.exchangeRefreshToken(client, 'any-token')
+      ).rejects.toThrow('Token refresh failed due to an internal error');
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Redis timeout')
+      );
     });
   });
 
@@ -348,6 +416,9 @@ describe('RedashOAuthProvider', () => {
       await expect(
         provider.verifyAccessToken('bad-token')
       ).rejects.toThrow('Invalid access token');
+      expect(logger.warning).toHaveBeenCalledWith(
+        expect.stringContaining('verification failed')
+      );
     });
   });
 
