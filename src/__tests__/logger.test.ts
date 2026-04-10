@@ -135,6 +135,52 @@ describe('Logger', () => {
     });
   });
 
+  describe('request context', () => {
+    it('should include requestId in dev output when context is provided', () => {
+      logger.info('Test message', { requestId: 'req-abc-123' });
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[INFO] [req:req-abc-123] Test message'
+      );
+    });
+
+    it('should work without context (backward compat)', () => {
+      logger.info('No context');
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[INFO] No context');
+    });
+
+    it('should include requestId in structured JSON output', () => {
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        logger.info('Prod message', { requestId: 'req-xyz-789' });
+
+        const output = consoleErrorSpy.mock.calls[0][0] as string;
+        const parsed = JSON.parse(output);
+        expect(parsed['logging.googleapis.com/trace']).toBe('req-xyz-789');
+        expect(parsed.message).toBe('Prod message');
+        expect(parsed.severity).toBe('INFO');
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('should omit requestId from JSON when context is not provided', () => {
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        logger.info('No context prod');
+
+        const output = consoleErrorSpy.mock.calls[0][0] as string;
+        const parsed = JSON.parse(output);
+        expect(parsed['logging.googleapis.com/trace']).toBeUndefined();
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+  });
+
   describe('setServer', () => {
     it('should update server instance', () => {
       const mockServer1 = {
