@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -47,11 +48,18 @@ function requireBasicAuth(
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Basic ")) {
     const decoded = Buffer.from(authHeader.slice(6), "base64").toString();
-    const [user, ...passParts] = decoded.split(":");
-    const pass = passParts.join(":"); // password may contain colons
-    if (user === BASIC_AUTH_USER && pass === BASIC_AUTH_PASS) {
-      next();
-      return;
+    const colonIdx = decoded.indexOf(":");
+    if (colonIdx !== -1) {
+      const user = decoded.substring(0, colonIdx);
+      const pass = decoded.substring(colonIdx + 1);
+      const userMatch = user.length === BASIC_AUTH_USER.length &&
+        timingSafeEqual(Buffer.from(user), Buffer.from(BASIC_AUTH_USER));
+      const passMatch = pass.length === BASIC_AUTH_PASS.length &&
+        timingSafeEqual(Buffer.from(pass), Buffer.from(BASIC_AUTH_PASS));
+      if (userMatch && passMatch) {
+        next();
+        return;
+      }
     }
   }
 
