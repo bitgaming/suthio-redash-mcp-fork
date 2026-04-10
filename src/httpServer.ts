@@ -209,6 +209,7 @@ app.post("/mcp", combinedAuth, async (req, res) => {
       res.status(500).json({ error: "Internal server error" });
     }
   } finally {
+    await transport.close();
     await server.close();
   }
 });
