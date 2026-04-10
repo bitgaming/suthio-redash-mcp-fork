@@ -27,6 +27,28 @@ const TTL_ACCESS_TOKEN = 3600 * 24 * 7;  // 7 days — sliding, refreshed on eac
 const TTL_REFRESH_TOKEN = 3600 * 24 * 7; // 7 days — sliding, refreshed on rotation
 const TTL_CLIENT = 3600 * 24 * 90;       // 90 days, refreshed on use
 
+// Allowed redirect URI hosts for dynamic client registration.
+// By default only loopback addresses are permitted (standard for native OAuth clients).
+// Set OAUTH_ALLOWED_REDIRECT_HOSTS to a comma-separated list to allow additional hosts.
+const ALLOWED_REDIRECT_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  ...(process.env.OAUTH_ALLOWED_REDIRECT_HOSTS || "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean),
+]);
+
+function isAllowedRedirectUri(uri: string): boolean {
+  try {
+    const parsed = new URL(uri);
+    return ALLOWED_REDIRECT_HOSTS.has(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 interface AuthCodeData {
   clientId: string;
   codeChallenge: string;
@@ -57,6 +79,23 @@ class RedashClientsStore implements OAuthRegisteredClientsStore {
   async registerClient(
     client: OAuthClientInformationFull
   ): Promise<OAuthClientInformationFull> {
+    // Validate redirect URIs against allowlist to prevent phishing via
+    // attacker-controlled redirect targets.
+    const uris = client.redirect_uris ?? [];
+    if (uris.length === 0) {
+      throw new Error("At least one redirect_uri is required");
+    }
+    for (const uri of uris) {
+      if (!isAllowedRedirectUri(uri.toString())) {
+        logger.warning(
+          `Client registration rejected: disallowed redirect_uri ${uri}`
+        );
+        throw new Error(
+          `redirect_uri not allowed: only loopback addresses (localhost, 127.0.0.1) are permitted`
+        );
+      }
+    }
+
     const clientId = client.client_id ?? randomUUID();
     const clientSecret = randomBytes(32).toString("hex");
     const full: OAuthClientInformationFull = {
