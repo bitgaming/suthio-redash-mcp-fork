@@ -9,6 +9,7 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { logger } from "./logger.js";
+import { redis, redisKey } from "./redis.js";
 
 function escapeHtml(str: string): string {
   return str
@@ -19,42 +20,38 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// In-memory stores — sufficient for single-replica deployments.
-// For multi-replica, replace with Redis or a shared store.
-const clients = new Map<string, OAuthClientInformationFull>();
-const csrfTokens = new Map<string, number>(); // token -> expiresAt
-const authCodes = new Map<
-  string,
-  {
-    clientId: string;
-    codeChallenge: string;
-    redirectUri: string;
-    redashApiKey: string;
-    state?: string;
-    expiresAt: number;
-  }
->();
-const tokens = new Map<
-  string,
-  {
-    clientId: string;
-    redashApiKey: string;
-    expiresAt: number;
-  }
->();
-const refreshTokens = new Map<
-  string,
-  {
-    clientId: string;
-    redashApiKey: string;
-  }
->();
+// TTLs in seconds
+const TTL_CSRF = 10 * 60;               // 10 minutes
+const TTL_AUTH_CODE = 5 * 60;            // 5 minutes
+const TTL_ACCESS_TOKEN = 3600 * 24 * 7;  // 7 days — sliding, refreshed on each use
+const TTL_REFRESH_TOKEN = 3600 * 24 * 7; // 7 days — sliding, refreshed on rotation
+const TTL_CLIENT = 3600 * 24 * 90;       // 90 days, refreshed on use
+
+interface AuthCodeData {
+  clientId: string;
+  codeChallenge: string;
+  redirectUri: string;
+  redashApiKey: string;
+  state?: string;
+}
+
+interface AccessTokenData {
+  clientId: string;
+  redashApiKey: string;
+}
+
+interface RefreshTokenData {
+  clientId: string;
+  redashApiKey: string;
+}
 
 class RedashClientsStore implements OAuthRegisteredClientsStore {
   async getClient(
     clientId: string
   ): Promise<OAuthClientInformationFull | undefined> {
-    return clients.get(clientId);
+    const data = await redis.get(redisKey("client", clientId));
+    if (!data) return undefined;
+    return JSON.parse(data) as OAuthClientInformationFull;
   }
 
   async registerClient(
@@ -68,7 +65,12 @@ class RedashClientsStore implements OAuthRegisteredClientsStore {
       client_secret: clientSecret,
       client_id_issued_at: Math.floor(Date.now() / 1000),
     };
-    clients.set(clientId, full);
+    await redis.set(
+      redisKey("client", clientId),
+      JSON.stringify(full),
+      "EX",
+      TTL_CLIENT
+    );
     logger.info(`Registered OAuth client: ${clientId}`);
     return full;
   }
@@ -83,7 +85,7 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     res: Response
   ): Promise<void> {
     const csrfToken = randomBytes(24).toString("hex");
-    csrfTokens.set(csrfToken, Date.now() + 10 * 60 * 1000); // 10 min
+    await redis.set(redisKey("csrf", csrfToken), "1", "EX", TTL_CSRF);
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -131,8 +133,9 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     _client: OAuthClientInformationFull,
     authorizationCode: string
   ): Promise<string> {
-    const code = authCodes.get(authorizationCode);
-    if (!code) throw new Error("Invalid authorization code");
+    const data = await redis.get(redisKey("code", authorizationCode));
+    if (!data) throw new Error("Invalid authorization code");
+    const code: AuthCodeData = JSON.parse(data);
     return code.codeChallenge;
   }
 
@@ -142,38 +145,52 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     _codeVerifier?: string,
     redirectUri?: string
   ): Promise<OAuthTokens> {
-    const code = authCodes.get(authorizationCode);
-    if (!code) throw new Error("Invalid authorization code");
+    const key = redisKey("code", authorizationCode);
+    const data = await redis.get(key);
+    if (!data) throw new Error("Invalid authorization code");
+    const code: AuthCodeData = JSON.parse(data);
+
     if (code.clientId !== client.client_id)
       throw new Error("Client mismatch");
     if (redirectUri && code.redirectUri !== redirectUri)
       throw new Error("redirect_uri mismatch");
-    if (Date.now() > code.expiresAt) {
-      authCodes.delete(authorizationCode);
-      throw new Error("Authorization code expired");
-    }
 
-    authCodes.delete(authorizationCode);
+    // Delete auth code (single-use)
+    await redis.del(key);
 
     const accessToken = randomBytes(32).toString("hex");
     const refreshToken = randomBytes(32).toString("hex");
-    const expiresIn = 3600 * 24 * 30; // 30 days
 
-    tokens.set(accessToken, {
+    const tokenData: AccessTokenData = {
       clientId: client.client_id,
       redashApiKey: code.redashApiKey,
-      expiresAt: Date.now() + expiresIn * 1000,
-    });
-
-    refreshTokens.set(refreshToken, {
+    };
+    const refreshData: RefreshTokenData = {
       clientId: client.client_id,
       redashApiKey: code.redashApiKey,
-    });
+    };
+
+    await Promise.all([
+      redis.set(
+        redisKey("token", accessToken),
+        JSON.stringify(tokenData),
+        "EX",
+        TTL_ACCESS_TOKEN
+      ),
+      redis.set(
+        redisKey("refresh", refreshToken),
+        JSON.stringify(refreshData),
+        "EX",
+        TTL_REFRESH_TOKEN
+      ),
+      // Refresh client TTL on use
+      redis.expire(redisKey("client", client.client_id), TTL_CLIENT),
+    ]);
 
     return {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: expiresIn,
+      expires_in: TTL_ACCESS_TOKEN,
       refresh_token: refreshToken,
     };
   }
@@ -182,48 +199,70 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     refreshToken: string
   ): Promise<OAuthTokens> {
-    const stored = refreshTokens.get(refreshToken);
-    if (!stored) throw new Error("Invalid refresh token");
+    const key = redisKey("refresh", refreshToken);
+    const data = await redis.get(key);
+    if (!data) throw new Error("Invalid refresh token");
+    const stored: RefreshTokenData = JSON.parse(data);
+
     if (stored.clientId !== client.client_id)
       throw new Error("Client mismatch");
 
     const accessToken = randomBytes(32).toString("hex");
     const newRefreshToken = randomBytes(32).toString("hex");
-    const expiresIn = 3600 * 24 * 30;
 
-    tokens.set(accessToken, {
+    const tokenData: AccessTokenData = {
       clientId: client.client_id,
       redashApiKey: stored.redashApiKey,
-      expiresAt: Date.now() + expiresIn * 1000,
-    });
-
-    refreshTokens.delete(refreshToken);
-    refreshTokens.set(newRefreshToken, {
+    };
+    const refreshData: RefreshTokenData = {
       clientId: client.client_id,
       redashApiKey: stored.redashApiKey,
-    });
+    };
+
+    await Promise.all([
+      // Delete old refresh token
+      redis.del(key),
+      redis.set(
+        redisKey("token", accessToken),
+        JSON.stringify(tokenData),
+        "EX",
+        TTL_ACCESS_TOKEN
+      ),
+      redis.set(
+        redisKey("refresh", newRefreshToken),
+        JSON.stringify(refreshData),
+        "EX",
+        TTL_REFRESH_TOKEN
+      ),
+      // Refresh client TTL on use
+      redis.expire(redisKey("client", client.client_id), TTL_CLIENT),
+    ]);
 
     return {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: expiresIn,
+      expires_in: TTL_ACCESS_TOKEN,
       refresh_token: newRefreshToken,
     };
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const stored = tokens.get(token);
-    if (!stored) throw new Error("Invalid access token");
-    if (Date.now() > stored.expiresAt) {
-      tokens.delete(token);
-      throw new Error("Access token expired");
-    }
+    const key = redisKey("token", token);
+    const data = await redis.get(key);
+    if (!data) throw new Error("Invalid access token");
+    const stored: AccessTokenData = JSON.parse(data);
+
+    // Sliding expiry: reset TTL on every successful verification
+    await Promise.all([
+      redis.expire(key, TTL_ACCESS_TOKEN),
+      redis.expire(redisKey("client", stored.clientId), TTL_CLIENT),
+    ]);
 
     return {
       token,
       clientId: stored.clientId,
       scopes: [],
-      expiresAt: Math.floor(stored.expiresAt / 1000),
+      expiresAt: Math.floor(Date.now() / 1000) + TTL_ACCESS_TOKEN,
       extra: { redashApiKey: stored.redashApiKey },
     };
   }
@@ -232,11 +271,13 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     _client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest
   ): Promise<void> {
-    tokens.delete(request.token);
-    refreshTokens.delete(request.token);
+    await Promise.all([
+      redis.del(redisKey("token", request.token)),
+      redis.del(redisKey("refresh", request.token)),
+    ]);
   }
 
-  handleAuthorizeSubmit(
+  async handleAuthorizeSubmit(
     csrfToken: string,
     clientId: string,
     redirectUri: string,
@@ -244,19 +285,20 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     state: string | undefined,
     redashApiKey: string,
     res: Response
-  ): void {
-    const csrfExpiry = csrfTokens.get(csrfToken);
-    csrfTokens.delete(csrfToken);
-    if (!csrfExpiry || Date.now() > csrfExpiry) {
+  ): Promise<void> {
+    // Atomically check and delete CSRF token
+    const deleted = await redis.del(redisKey("csrf", csrfToken));
+    if (!deleted) {
       res.status(403).send("Invalid or expired form submission. Please go back and try again.");
       return;
     }
 
-    const client = clients.get(clientId);
-    if (!client) {
+    const clientData = await redis.get(redisKey("client", clientId));
+    if (!clientData) {
       res.status(400).send("Invalid client_id");
       return;
     }
+    const client: OAuthClientInformationFull = JSON.parse(clientData);
 
     const registeredUris = client.redirect_uris || [];
     if (!registeredUris.some((uri) => uri.toString() === redirectUri)) {
@@ -265,14 +307,19 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     }
 
     const code = randomBytes(16).toString("hex");
-    authCodes.set(code, {
+    const codeData: AuthCodeData = {
       clientId,
       codeChallenge,
       redirectUri,
       redashApiKey,
       state,
-      expiresAt: Date.now() + 5 * 60 * 1000, // 5 min
-    });
+    };
+    await redis.set(
+      redisKey("code", code),
+      JSON.stringify(codeData),
+      "EX",
+      TTL_AUTH_CODE
+    );
 
     const url = new URL(redirectUri);
     url.searchParams.set("code", code);

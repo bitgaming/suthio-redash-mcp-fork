@@ -8,6 +8,7 @@ import { createRedashClient } from "./redashClient.js";
 import { createServer } from "./index.js";
 import { logger } from "./logger.js";
 import { RedashOAuthProvider, getRedashApiKeyFromAuth } from "./auth.js";
+import { connectRedis, redis } from "./redis.js";
 
 const app = express();
 app.set("trust proxy", true);
@@ -95,14 +96,14 @@ app.use("/authorize/submit", express.urlencoded({ extended: false }));
 app.post(
   "/authorize/submit",
   requireBasicAuth,
-  (req: express.Request, res: express.Response) => {
+  async (req: express.Request, res: express.Response) => {
     const { csrf_token, client_id, redirect_uri, code_challenge, state, api_key } =
       req.body;
     if (!csrf_token || !client_id || !redirect_uri || !code_challenge || !api_key) {
       res.status(400).send("Missing required fields");
       return;
     }
-    oauthProvider.handleAuthorizeSubmit(
+    await oauthProvider.handleAuthorizeSubmit(
       csrf_token,
       client_id,
       redirect_uri,
@@ -170,7 +171,9 @@ function combinedAuth(
 
 // Health check (public)
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
+  const redisOk = redis.status === "ready";
+  const status = redisOk ? "ok" : "degraded";
+  res.status(redisOk ? 200 : 503).json({ status, redis: redis.status });
 });
 
 // MCP endpoint — stateless: each POST creates a fresh server + transport
@@ -202,18 +205,27 @@ app.all("/mcp", (_req, res) => {
   res.status(405).json({ error: "Method not allowed. Use POST." });
 });
 
-app.listen(PORT, () => {
-  logger.info(`HTTP MCP server listening on port ${PORT}`);
-  logger.info(`Base URL: ${BASE_URL}`);
-  logger.info(
-    AUTH_TOKENS.length > 0
-      ? `Legacy bearer auth enabled (${AUTH_TOKENS.length} token(s))`
-      : "Legacy bearer auth disabled (no MCP_AUTH_TOKENS set)"
-  );
-  logger.info("OAuth 2.1 auth enabled for Claude Desktop Connectors");
-  logger.info(
-    basicAuthEnabled
-      ? "OAuth authorize page protected with basic auth"
-      : "OAuth authorize page is open (set OAUTH_BASIC_AUTH_USER and OAUTH_BASIC_AUTH_PASS to enable basic auth)"
-  );
+async function main() {
+  await connectRedis();
+
+  app.listen(PORT, () => {
+    logger.info(`HTTP MCP server listening on port ${PORT}`);
+    logger.info(`Base URL: ${BASE_URL}`);
+    logger.info(
+      AUTH_TOKENS.length > 0
+        ? `Legacy bearer auth enabled (${AUTH_TOKENS.length} token(s))`
+        : "Legacy bearer auth disabled (no MCP_AUTH_TOKENS set)"
+    );
+    logger.info("OAuth 2.1 auth enabled for Claude Desktop Connectors");
+    logger.info(
+      basicAuthEnabled
+        ? "OAuth authorize page protected with basic auth"
+        : "OAuth authorize page is open (set OAUTH_BASIC_AUTH_USER and OAUTH_BASIC_AUTH_PASS to enable basic auth)"
+    );
+  });
+}
+
+main().catch((err) => {
+  logger.error(`Failed to start server: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
 });
