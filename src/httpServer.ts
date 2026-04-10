@@ -226,7 +226,7 @@ app.delete("/mcp", (_req, res) => {
 async function main() {
   await connectRedis();
 
-  app.listen(PORT, () => {
+  const httpServer = app.listen(PORT, () => {
     logger.info(`HTTP MCP server listening on port ${PORT}`);
     logger.info(`Base URL: ${BASE_URL}`);
     logger.info(
@@ -246,6 +246,26 @@ async function main() {
         : "OAuth authorize page is open (set OAUTH_BASIC_AUTH_USER and OAUTH_BASIC_AUTH_PASS to enable basic auth)"
     );
   });
+
+  function shutdown(signal: string) {
+    logger.info(`Received ${signal}, shutting down gracefully...`);
+    httpServer.close(() => {
+      redis.quit().then(() => {
+        logger.info("Shutdown complete");
+        process.exit(0);
+      }).catch(() => {
+        process.exit(1);
+      });
+    });
+    // Force exit if graceful shutdown takes too long
+    setTimeout(() => {
+      logger.error("Shutdown timed out, forcing exit");
+      process.exit(1);
+    }, 10_000).unref();
+  }
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 main().catch((err) => {
