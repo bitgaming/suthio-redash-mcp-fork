@@ -22,6 +22,7 @@ function escapeHtml(str: string): string {
 // In-memory stores — sufficient for single-replica deployments.
 // For multi-replica, replace with Redis or a shared store.
 const clients = new Map<string, OAuthClientInformationFull>();
+const csrfTokens = new Map<string, number>(); // token -> expiresAt
 const authCodes = new Map<
   string,
   {
@@ -81,6 +82,9 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response
   ): Promise<void> {
+    const csrfToken = randomBytes(24).toString("hex");
+    csrfTokens.set(csrfToken, Date.now() + 10 * 60 * 1000); // 10 min
+
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -106,6 +110,7 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     <h1>Redash MCP Authorization</h1>
     <p>Enter your Redash API key to authorize <span class="client-name">${escapeHtml(client.client_name || "the application")}</span>.</p>
     <form method="POST" action="/authorize/submit">
+      <input type="hidden" name="csrf_token" value="${csrfToken}">
       <input type="hidden" name="client_id" value="${escapeHtml(client.client_id)}">
       <input type="hidden" name="redirect_uri" value="${escapeHtml(params.redirectUri)}">
       <input type="hidden" name="code_challenge" value="${escapeHtml(params.codeChallenge)}">
@@ -232,6 +237,7 @@ export class RedashOAuthProvider implements OAuthServerProvider {
   }
 
   handleAuthorizeSubmit(
+    csrfToken: string,
     clientId: string,
     redirectUri: string,
     codeChallenge: string,
@@ -239,6 +245,13 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     redashApiKey: string,
     res: Response
   ): void {
+    const csrfExpiry = csrfTokens.get(csrfToken);
+    csrfTokens.delete(csrfToken);
+    if (!csrfExpiry || Date.now() > csrfExpiry) {
+      res.status(403).send("Invalid or expired form submission. Please go back and try again.");
+      return;
+    }
+
     const client = clients.get(clientId);
     if (!client) {
       res.status(400).send("Invalid client_id");

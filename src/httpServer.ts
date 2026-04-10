@@ -96,13 +96,14 @@ app.post(
   "/authorize/submit",
   requireBasicAuth,
   (req: express.Request, res: express.Response) => {
-    const { client_id, redirect_uri, code_challenge, state, api_key } =
+    const { csrf_token, client_id, redirect_uri, code_challenge, state, api_key } =
       req.body;
-    if (!client_id || !redirect_uri || !code_challenge || !api_key) {
+    if (!csrf_token || !client_id || !redirect_uri || !code_challenge || !api_key) {
       res.status(400).send("Missing required fields");
       return;
     }
     oauthProvider.handleAuthorizeSubmit(
+      csrf_token,
       client_id,
       redirect_uri,
       code_challenge,
