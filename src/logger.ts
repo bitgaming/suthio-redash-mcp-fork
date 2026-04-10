@@ -14,10 +14,6 @@ export enum LogLevel {
   EMERGENCY = "emergency"
 }
 
-export interface LogContext {
-  requestId?: string;
-}
-
 export class Logger {
   private server: any | null = null;
 
@@ -28,52 +24,25 @@ export class Logger {
     this.server = server;
   }
 
-  debug(message: string, context?: LogContext): void {
-    this.log(LogLevel.DEBUG, message, context);
+  debug(message: string): void {
+    this.log(LogLevel.DEBUG, message);
   }
 
-  info(message: string, context?: LogContext): void {
-    this.log(LogLevel.INFO, message, context);
+  info(message: string): void {
+    this.log(LogLevel.INFO, message);
   }
 
-  warning(message: string, context?: LogContext): void {
-    this.log(LogLevel.WARNING, message, context);
+  warning(message: string): void {
+    this.log(LogLevel.WARNING, message);
   }
 
-  error(message: string, context?: LogContext): void {
-    this.log(LogLevel.ERROR, message, context);
+  error(message: string): void {
+    this.log(LogLevel.ERROR, message);
   }
 
-  log(level: LogLevel, message: string, context?: LogContext): void {
-    // In production, output structured JSON for Google Cloud Logging / Error Reporting.
-    // Locally, output plain text for readability.
-    if (process.env.NODE_ENV === "production") {
-      const severityMap: Record<string, string> = {
-        debug: "DEBUG",
-        info: "INFO",
-        notice: "NOTICE",
-        warning: "WARNING",
-        error: "ERROR",
-        critical: "CRITICAL",
-        alert: "ALERT",
-        emergency: "EMERGENCY",
-      };
-      const entry: Record<string, unknown> = {
-        severity: severityMap[level] || "DEFAULT",
-        message,
-        "serviceContext": { service: "redash-mcp" },
-      };
-      if (context?.requestId) {
-        entry["logging.googleapis.com/trace"] = context.requestId;
-      }
-      if (level === LogLevel.ERROR || level === LogLevel.CRITICAL || level === LogLevel.ALERT || level === LogLevel.EMERGENCY) {
-        entry["@type"] = "type.googleapis.com/google.devtools.clouderrorreporting.v1beta1.ReportedErrorEvent";
-      }
-      console.error(JSON.stringify(entry));
-    } else {
-      const prefix = context?.requestId ? `[${level.toUpperCase()}] [req:${context.requestId}]` : `[${level.toUpperCase()}]`;
-      console.error(`${prefix} ${message}`);
-    }
+  log(level: LogLevel, message: string): void {
+    // Always output to stderr for local debugging
+    console.error(`[${level.toUpperCase()}] ${message}`);
 
     // If server is set and supports logging notifications, send them
     if (this.server && typeof this.server.notification === 'function') {
