@@ -217,6 +217,25 @@ describe('RedashOAuthProvider', () => {
       expect(redis.set).toHaveBeenCalled();
     });
 
+    it('should set security headers on authorization page', async () => {
+      const res = mockResponse();
+      const client = makeClient();
+      const params = {
+        redirectUri: 'http://localhost:3000/callback',
+        codeChallenge: 'test-challenge',
+        state: 'test-state',
+      };
+
+      await provider.authorize(client, params as any, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'Content-Security-Policy',
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+      );
+      expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
+      expect(res.setHeader).toHaveBeenCalledWith('X-Content-Type-Options', 'nosniff');
+    });
+
     it('should escape HTML in client name', async () => {
       const res = mockResponse();
       const client = makeClient({ client_name: '<script>alert("xss")</script>' });

@@ -173,6 +173,9 @@ export class RedashOAuthProvider implements OAuthServerProvider {
 </body>
 </html>`;
     res.setHeader("Content-Type", "text/html");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.send(html);
   }
 
