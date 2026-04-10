@@ -51,6 +51,9 @@ const ALLOWED_REDIRECT_HOSTS = new Set([
 function isAllowedRedirectUri(uri: string): boolean {
   try {
     const parsed = new URL(uri);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
     return ALLOWED_REDIRECT_HOSTS.has(parsed.hostname.toLowerCase());
   } catch {
     return false;
