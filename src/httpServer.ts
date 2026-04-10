@@ -201,11 +201,27 @@ function combinedAuth(
 
 // --- Routes ---
 
-// Health check (public)
-app.get("/health", (_req, res) => {
+// Liveness probe — is the process alive? Always 200 unless truly wedged.
+// Use this for Kubernetes livenessProbe so a Redis outage doesn't cascade
+// into pod restarts.
+app.get("/health/live", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+// Readiness probe — can this pod serve traffic? Checks Redis.
+// Use this for Kubernetes readinessProbe: a 503 removes the pod from the
+// Service (stops traffic) but does NOT restart it.
+app.get("/health/ready", (_req, res) => {
   const redisOk = redis.status === "ready";
   const status = redisOk ? "ok" : "degraded";
   res.status(redisOk ? 200 : 503).json({ status, redis: redis.status });
+});
+
+// General health — returns status but always 200, safe for load balancers
+// that don't distinguish liveness/readiness.
+app.get("/health", (_req, res) => {
+  const redisOk = redis.status === "ready";
+  res.json({ status: redisOk ? "ok" : "degraded", redis: redis.status });
 });
 
 // MCP endpoint — stateless: each POST creates a fresh server + transport
