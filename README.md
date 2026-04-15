@@ -6,6 +6,8 @@ Model Context Protocol (MCP) server for integrating Redash with AI assistants li
   <img width="380" height="200" src="https://glama.ai/mcp/servers/j9bl90s3tw/badge" alt="Redash Server MCP server" />
 </a>
 
+> **Fork note:** This fork extends [`@suthio/redash-mcp`](https://github.com/suthio/redash-mcp) with a stateless HTTP transport and OAuth 2.1 support, intended for running a centrally deployed MCP server that multiple users can connect to. For individual use, install the upstream package directly — this fork is only needed when running a shared multi-user server.
+
 ## Features
 
 - Connect to Redash instances via the Redash API
@@ -108,6 +110,51 @@ Add the following configuration (edit paths as needed):
   }
 }
 ```
+
+## HTTP Transport (shared deployment)
+
+In addition to stdio, this fork ships an HTTP entry point (`dist/httpServer.js`) designed to run as a long-lived server. The transport is stateless — each incoming MCP request spins up a fresh server instance, so any replica can serve any request. OAuth and bearer-token state is kept in Redis.
+
+Run with:
+
+```bash
+node dist/httpServer.js
+```
+
+### Endpoints
+
+- `POST /mcp` — MCP protocol endpoint. Requires authentication.
+- `GET /health` — Liveness/readiness probe. Reports Redis connectivity.
+- `GET /.well-known/oauth-authorization-server`, `POST /register`, `GET /authorize`, `POST /token`, `POST /revoke` — OAuth 2.1 discovery and flow, provided by the MCP SDK.
+
+### Authentication
+
+Two modes are supported on `POST /mcp`:
+
+- **OAuth 2.1** (Claude Desktop Connectors): clients register via Dynamic Client Registration, the user enters their Redash API key in the `/authorize` form, and the server mints a bearer token bound to that key. Refresh tokens rotate on each use.
+- **Legacy bearer + header** (Claude Code and similar): set `MCP_AUTH_TOKENS` to a comma-separated list of shared secrets. Clients send `Authorization: Bearer <token>` together with the per-user `X-Redash-API-Key` header.
+
+### Environment variables
+
+HTTP server:
+
+- `PORT` — HTTP listen port (default `3000`)
+- `BASE_URL` — Public URL of the server, used as the OAuth issuer and resource URL (default `http://localhost:${PORT}`)
+- `TRUST_PROXY` — Value passed to Express `trust proxy` (default `1`, suitable for a single reverse proxy)
+
+Redis (required for HTTP mode):
+
+- `REDIS_URL` — Connection string (default `redis://localhost:6379/0`)
+- `MCP_ENCRYPTION_KEY` — Key used to encrypt Redash API keys at rest in Redis (AES-256-GCM). Accepts a 64-char hex string as a raw 256-bit key, or any other string which is derived into one. If unset, API keys are stored in plaintext and the server logs a warning.
+
+OAuth:
+
+- `OAUTH_ALLOWED_REDIRECT_HOSTS` — Comma-separated list of additional hosts permitted as client redirect URIs. By default only loopback (`localhost`, `127.0.0.1`, `::1`) is allowed.
+- `OAUTH_BASIC_AUTH_USER` / `OAUTH_BASIC_AUTH_PASS` — When both are set, the `/authorize` page is gated with HTTP Basic Auth before the API key form is shown. Recommended for public deployments.
+
+Legacy auth (optional):
+
+- `MCP_AUTH_TOKENS` — Comma-separated bearer tokens accepted alongside the `X-Redash-API-Key` header.
 
 ## Available Tools
 
