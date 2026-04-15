@@ -14,9 +14,6 @@ export enum LogLevel {
   EMERGENCY = "emergency"
 }
 
-/**
- * Logger class that outputs to both console and can send notifications to clients
- */
 export class Logger {
   private server: any | null = null;
 
@@ -27,37 +24,22 @@ export class Logger {
     this.server = server;
   }
 
-  /**
-   * Log a debug message
-   */
   debug(message: string): void {
     this.log(LogLevel.DEBUG, message);
   }
 
-  /**
-   * Log an info message
-   */
   info(message: string): void {
     this.log(LogLevel.INFO, message);
   }
 
-  /**
-   * Log a warning message
-   */
   warning(message: string): void {
     this.log(LogLevel.WARNING, message);
   }
 
-  /**
-   * Log an error message
-   */
   error(message: string): void {
     this.log(LogLevel.ERROR, message);
   }
 
-  /**
-   * Log a message with the specified level
-   */
   log(level: LogLevel, message: string): void {
     // Always output to stderr for local debugging
     console.error(`[${level.toUpperCase()}] ${message}`);
