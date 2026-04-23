@@ -230,10 +230,27 @@ describe('RedashOAuthProvider', () => {
 
       expect(res.setHeader).toHaveBeenCalledWith(
         'Content-Security-Policy',
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' http://localhost:3000"
       );
       expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
       expect(res.setHeader).toHaveBeenCalledWith('X-Content-Type-Options', 'nosniff');
+    });
+
+    it('should allow cross-origin redirect target in form-action CSP', async () => {
+      const res = mockResponse();
+      const client = makeClient();
+      const params = {
+        redirectUri: 'https://claude.ai/api/mcp/auth_callback',
+        codeChallenge: 'test-challenge',
+        state: 'test-state',
+      };
+
+      await provider.authorize(client, params as any, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'Content-Security-Policy',
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://claude.ai"
+      );
     });
 
     it('should escape HTML in client name', async () => {
