@@ -137,6 +137,10 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     const csrfToken = randomBytes(24).toString("hex");
     await redis.set(redisKey("csrf", csrfToken), "1", "EX", TTL_CSRF);
 
+    // form-action is enforced against every URL in the redirect chain, so 'self'
+    // alone blocks the cross-origin 302 from /authorize/submit back to the client.
+    const redirectOrigin = new URL(params.redirectUri).origin;
+
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -176,7 +180,10 @@ export class RedashOAuthProvider implements OAuthServerProvider {
 </body>
 </html>`;
     res.setHeader("Content-Type", "text/html");
-    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
+    res.setHeader(
+      "Content-Security-Policy",
+      `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${redirectOrigin}`
+    );
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.send(html);
