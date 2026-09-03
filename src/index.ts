@@ -939,9 +939,6 @@ async function getAlert(params: z.infer<typeof getAlertSchema>) {
   }
 }
 
-// Every alert setting except name/query_id/rearm lives in `options`, which Redash
-// replaces wholesale on write. Model all of it so a partial edit can't drop the
-// keys the caller didn't mention.
 const alertSelectorSchema = z.enum(["first", "min", "max"]);
 
 // Anything outside this set falls through Redash's OPERATORS lookup to a
@@ -951,6 +948,9 @@ const alertOperatorSchema = z.enum([
   "greater than", "less than", "equals"
 ]);
 
+// Every alert setting except name/query_id/rearm lives in `options`, which Redash
+// replaces wholesale on write. Model all of it so a partial edit can't drop the
+// keys the caller didn't mention.
 const alertOptionsSchema = z.object({
   column: z.string(),
   op: alertOperatorSchema,
