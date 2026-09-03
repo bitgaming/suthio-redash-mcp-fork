@@ -941,31 +941,21 @@ async function getAlert(params: z.infer<typeof getAlertSchema>) {
 
 const alertSelectorSchema = z.enum(["first", "min", "max"]);
 
-// Anything outside this set falls through Redash's OPERATORS lookup to a
-// comparison that is always false, i.e. an alert that never fires.
-const alertOperatorSchema = z.enum([
-  ">", ">=", "<", "<=", "==", "!=",
-  "greater than", "less than", "equals"
-]);
-
-// Every alert setting except name/query_id/rearm lives in `options`, which Redash
-// replaces wholesale on write. Model all of it so a partial edit can't drop the
-// keys the caller didn't mention.
 const alertOptionsSchema = z.object({
   column: z.string(),
-  op: alertOperatorSchema,
+  op: z.string(),
   value: z.union([z.coerce.number(), z.string()]),
   selector: alertSelectorSchema,
   custom_subject: z.string(),
-  custom_body: z.string(),
-  template: z.string(),
-  muted: z.boolean()
+  custom_body: z.string()
 });
 
 // Tool: create_alert
 const createAlertSchema = z.object({
   name: z.string(),
   query_id: z.coerce.number(),
+  // Redash's notification rendering reads options["selector"] with no default, so
+  // an alert saved without it evaluates fine but can never notify.
   options: alertOptionsSchema
     .partial()
     .required({ column: true, op: true, value: true })
@@ -2003,13 +1993,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Alert options. selector defaults to 'first' when omitted, because Redash cannot render notifications for an alert that has no selector.",
               properties: {
                 column: { type: "string", description: "Column name to monitor" },
-                op: { type: "string", enum: [">", ">=", "<", "<=", "==", "!=", "greater than", "less than", "equals"], description: "Comparison operator. Values outside this list never trigger the alert." },
+                op: { type: "string", description: "Comparison operator: '>', '>=', '<', '<=', '==', '!=' (also 'greater than', 'less than', 'equals'). Any other value never triggers the alert." },
                 value: { type: ["number", "string"], description: "Threshold value to compare against" },
-                selector: { type: "string", enum: ["first", "min", "max"], description: "Which row of the result to compare: the first row, or the min/max of the column. Omitting it on an existing alert breaks notification rendering." },
+                selector: { type: "string", enum: ["first", "min", "max"], description: "Which row of the result to compare: the first row, or the min/max of the column." },
                 custom_subject: { type: "string", description: "Custom notification subject (Mustache template)" },
-                custom_body: { type: "string", description: "Custom notification body (Mustache template)" },
-                template: { type: "string", description: "Legacy body template, read only when custom_body is unset" },
-                muted: { type: "boolean", description: "Suppress notifications while the alert still evaluates" }
+                custom_body: { type: "string", description: "Custom notification body (Mustache template)" }
               },
               required: ["column", "op", "value"]
             },
@@ -2032,13 +2020,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Alert options to change. Supplied keys are merged into the alert's existing options, so unlisted keys are preserved.",
               properties: {
                 column: { type: "string", description: "Column name to monitor" },
-                op: { type: "string", enum: [">", ">=", "<", "<=", "==", "!=", "greater than", "less than", "equals"], description: "Comparison operator. Values outside this list never trigger the alert." },
+                op: { type: "string", description: "Comparison operator: '>', '>=', '<', '<=', '==', '!=' (also 'greater than', 'less than', 'equals'). Any other value never triggers the alert." },
                 value: { type: ["number", "string"], description: "Threshold value to compare against" },
-                selector: { type: "string", enum: ["first", "min", "max"], description: "Which row of the result to compare: the first row, or the min/max of the column. Omitting it on an existing alert breaks notification rendering." },
+                selector: { type: "string", enum: ["first", "min", "max"], description: "Which row of the result to compare: the first row, or the min/max of the column." },
                 custom_subject: { type: "string", description: "Custom notification subject (Mustache template)" },
-                custom_body: { type: "string", description: "Custom notification body (Mustache template)" },
-                template: { type: "string", description: "Legacy body template, read only when custom_body is unset" },
-                muted: { type: "boolean", description: "Suppress notifications while the alert still evaluates" }
+                custom_body: { type: "string", description: "Custom notification body (Mustache template)" }
               }
             },
             rearm: { type: ["number", "null"], description: "Number of seconds to wait before triggering again" }

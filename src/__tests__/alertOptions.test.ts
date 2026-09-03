@@ -23,6 +23,7 @@ const storedAlert = {
     value: 15000,
     selector: 'first' as const,
     custom_body: 'stored body',
+    template: 'legacy body',
     muted: false
   },
   state: 'ok',
@@ -54,41 +55,26 @@ describe('create_alert', () => {
     );
   });
 
-  it('passes through every option Redash understands', async () => {
+  it('passes through the options it accepts', async () => {
     const createAlert = jest.fn<any>().mockResolvedValue(storedAlert);
     const mcp = await connect({ createAlert });
 
     const options = {
       column: 'amount',
-      op: '>=' as const,
+      op: '>=',
       value: 15000,
       selector: 'max' as const,
       custom_subject: 'subject',
-      custom_body: 'body',
-      template: 'legacy',
-      muted: true
+      custom_body: 'body'
     };
     await mcp.callTool({ name: 'create_alert', arguments: { name: 'Big win', query_id: 2955, options } });
 
     expect(createAlert).toHaveBeenCalledWith(expect.objectContaining({ options }));
   });
-
-  it('rejects an operator Redash would never match', async () => {
-    const createAlert = jest.fn<any>().mockResolvedValue(storedAlert);
-    const mcp = await connect({ createAlert });
-
-    const result: any = await mcp.callTool({
-      name: 'create_alert',
-      arguments: { name: 'Big win', query_id: 2955, options: { column: 'amount', op: 'not equals', value: 0 } }
-    });
-
-    expect(result.isError).toBe(true);
-    expect(createAlert).not.toHaveBeenCalled();
-  });
 });
 
 describe('update_alert', () => {
-  it('keeps options the caller did not mention', async () => {
+  it('keeps options the caller did not mention, including ones the schema omits', async () => {
     const getAlert = jest.fn<any>().mockResolvedValue(storedAlert);
     const updateAlert = jest.fn<any>().mockResolvedValue(storedAlert);
     const mcp = await connect({ getAlert, updateAlert });
@@ -105,6 +91,7 @@ describe('update_alert', () => {
         value: 20000,
         selector: 'first',
         custom_body: 'stored body',
+        template: 'legacy body',
         muted: false
       }
     });

@@ -146,8 +146,6 @@ export interface AlertOptions {
   selector?: 'first' | 'min' | 'max';
   custom_subject?: string;
   custom_body?: string;
-  /** Superseded by custom_body, still read as its fallback. */
-  template?: string;
   muted?: boolean;
 }
 
