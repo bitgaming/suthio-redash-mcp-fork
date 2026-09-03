@@ -136,18 +136,26 @@ export interface UpdateDashboardRequest {
 }
 
 // Alert interfaces
+// Redash keeps every alert setting except name/query_id/rearm in `options`, and
+// its notification path reads options["selector"] with no default, so an alert
+// stored without that key raises KeyError instead of notifying.
+export interface AlertOptions {
+  column: string;
+  op: string;
+  value: number | string;
+  selector?: 'first' | 'min' | 'max';
+  custom_subject?: string;
+  custom_body?: string;
+  /** Superseded by custom_body, still read as its fallback. */
+  template?: string;
+  muted?: boolean;
+}
+
 export interface RedashAlert {
   id: number;
   name: string;
   query_id: number;
-  options: {
-    column: string;
-    op: string;
-    value: number | string;
-    custom_subject?: string;
-    custom_body?: string;
-    muted?: boolean;
-  };
+  options: AlertOptions;
   state: string;
   last_triggered_at: string | null;
   rearm: number | null;
@@ -158,26 +166,14 @@ export interface RedashAlert {
 export interface CreateAlertRequest {
   name: string;
   query_id: number;
-  options: {
-    column: string;
-    op: string;
-    value: number | string;
-    custom_subject?: string;
-    custom_body?: string;
-  };
+  options: AlertOptions;
   rearm?: number | null;
 }
 
 export interface UpdateAlertRequest {
   name?: string;
   query_id?: number;
-  options?: {
-    column?: string;
-    op?: string;
-    value?: number | string;
-    custom_subject?: string;
-    custom_body?: string;
-  };
+  options?: Partial<AlertOptions>;
   rearm?: number | null;
 }
 
