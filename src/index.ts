@@ -939,17 +939,27 @@ async function getAlert(params: z.infer<typeof getAlertSchema>) {
   }
 }
 
+const alertSelectorSchema = z.enum(["first", "min", "max"]);
+
+const alertOptionsSchema = z.object({
+  column: z.string(),
+  op: z.string(),
+  value: z.union([z.coerce.number(), z.string()]),
+  selector: alertSelectorSchema,
+  custom_subject: z.string(),
+  custom_body: z.string()
+});
+
 // Tool: create_alert
 const createAlertSchema = z.object({
   name: z.string(),
   query_id: z.coerce.number(),
-  options: z.object({
-    column: z.string(),
-    op: z.string(),
-    value: z.union([z.coerce.number(), z.string()]),
-    custom_subject: z.string().optional(),
-    custom_body: z.string().optional()
-  }),
+  // Redash's notification rendering reads options["selector"] with no default, so
+  // an alert saved without it evaluates fine but can never notify.
+  options: alertOptionsSchema
+    .partial()
+    .required({ column: true, op: true, value: true })
+    .extend({ selector: alertSelectorSchema.default("first") }),
   rearm: z.coerce.number().nullable().optional()
 });
 
@@ -979,13 +989,7 @@ const updateAlertSchema = z.object({
   alertId: z.coerce.number(),
   name: z.string().optional(),
   query_id: z.coerce.number().optional(),
-  options: z.object({
-    column: z.string().optional(),
-    op: z.string().optional(),
-    value: z.union([z.coerce.number(), z.string()]).optional(),
-    custom_subject: z.string().optional(),
-    custom_body: z.string().optional()
-  }).optional(),
+  options: alertOptionsSchema.partial().optional(),
   rearm: z.coerce.number().nullable().optional()
 });
 
@@ -995,8 +999,13 @@ async function updateAlert(params: z.infer<typeof updateAlertSchema>) {
     const alertData: UpdateAlertRequest = {};
     if (updateData.name !== undefined) alertData.name = updateData.name;
     if (updateData.query_id !== undefined) alertData.query_id = updateData.query_id;
-    if (updateData.options !== undefined) alertData.options = updateData.options;
     if (updateData.rearm !== undefined) alertData.rearm = updateData.rearm;
+    if (updateData.options !== undefined) {
+      // Redash overwrites options with whatever is posted, so layer the edit on
+      // top of the stored object rather than sending it alone.
+      const current = await redashClient.getAlert(alertId);
+      alertData.options = { ...current.options, ...updateData.options };
+    }
 
     const result = await redashClient.updateAlert(alertId, alertData);
     return {
@@ -1981,13 +1990,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             query_id: { type: "number", description: "ID of the query to monitor" },
             options: {
               type: "object",
-              description: "Alert options including column to monitor, operator (e.g., 'greater than', 'less than', 'equals'), and threshold value",
+              description: "Alert options. selector defaults to 'first' when omitted, because Redash cannot render notifications for an alert that has no selector.",
               properties: {
                 column: { type: "string", description: "Column name to monitor" },
-                op: { type: "string", description: "Comparison operator: 'greater than', 'less than', 'equals', 'not equals', etc." },
+                op: { type: "string", description: "Comparison operator: '>', '>=', '<', '<=', '==', '!=' (also 'greater than', 'less than', 'equals'). Any other value never triggers the alert." },
                 value: { type: ["number", "string"], description: "Threshold value to compare against" },
-                custom_subject: { type: "string", description: "Custom email subject" },
-                custom_body: { type: "string", description: "Custom email body" }
+                selector: { type: "string", enum: ["first", "min", "max"], description: "Which row of the result to compare: the first row, or the min/max of the column." },
+                custom_subject: { type: "string", description: "Custom notification subject (Mustache template)" },
+                custom_body: { type: "string", description: "Custom notification body (Mustache template)" }
               },
               required: ["column", "op", "value"]
             },
@@ -2007,13 +2017,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             query_id: { type: "number", description: "ID of the query to monitor" },
             options: {
               type: "object",
-              description: "Alert options",
+              description: "Alert options to change. Supplied keys are merged into the alert's existing options, so unlisted keys are preserved.",
               properties: {
                 column: { type: "string", description: "Column name to monitor" },
-                op: { type: "string", description: "Comparison operator" },
-                value: { type: ["number", "string"], description: "Threshold value" },
-                custom_subject: { type: "string", description: "Custom email subject" },
-                custom_body: { type: "string", description: "Custom email body" }
+                op: { type: "string", description: "Comparison operator: '>', '>=', '<', '<=', '==', '!=' (also 'greater than', 'less than', 'equals'). Any other value never triggers the alert." },
+                value: { type: ["number", "string"], description: "Threshold value to compare against" },
+                selector: { type: "string", enum: ["first", "min", "max"], description: "Which row of the result to compare: the first row, or the min/max of the column." },
+                custom_subject: { type: "string", description: "Custom notification subject (Mustache template)" },
+                custom_body: { type: "string", description: "Custom notification body (Mustache template)" }
               }
             },
             rearm: { type: ["number", "null"], description: "Number of seconds to wait before triggering again" }
