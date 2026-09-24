@@ -288,7 +288,7 @@ async function executeQuery(params: z.infer<typeof executeQuerySchema>) {
       ]
     };
   } catch (error) {
-    console.error(`Error executing query ${params.queryId}:`, error);
+    logger.error(`Error executing query ${params.queryId}: ${error}`);
     return {
       isError: true,
       content: [
@@ -354,7 +354,7 @@ async function listDashboards(params: z.infer<typeof listDashboardsSchema>) {
       ]
     };
   } catch (error) {
-    console.error('Error listing dashboards:', error);
+    logger.error(`Error listing dashboards: ${error}`);
     return {
       isError: true,
       content: [
@@ -386,7 +386,7 @@ async function getDashboard(params: z.infer<typeof getDashboardSchema>) {
       ]
     };
   } catch (error) {
-    console.error(`Error getting dashboard ${params.dashboardId}:`, error);
+    logger.error(`Error getting dashboard ${params.dashboardId}: ${error}`);
     return {
       isError: true,
       content: [
@@ -450,7 +450,7 @@ async function getVisualization(params: z.infer<typeof getVisualizationSchema>) 
       ]
     };
   } catch (error) {
-    console.error(`Error getting visualization ${params.visualizationId}:`, error);
+    logger.error(`Error getting visualization ${params.visualizationId}: ${error}`);
     return {
       isError: true,
       content: [
@@ -526,7 +526,7 @@ async function createVisualization(params: z.infer<typeof createVisualizationSch
       ]
     };
   } catch (error) {
-    console.error('Error creating visualization:', error);
+    logger.error(`Error creating visualization: ${error}`);
     return {
       isError: true,
       content: [
@@ -562,7 +562,7 @@ async function updateVisualization(params: z.infer<typeof updateVisualizationSch
       ]
     };
   } catch (error) {
-    console.error(`Error updating visualization ${params.visualizationId}:`, error);
+    logger.error(`Error updating visualization ${params.visualizationId}: ${error}`);
     return {
       isError: true,
       content: [
@@ -594,7 +594,7 @@ async function deleteVisualization(params: z.infer<typeof deleteVisualizationSch
       ]
     };
   } catch (error) {
-    console.error(`Error deleting visualization ${params.visualizationId}:`, error);
+    logger.error(`Error deleting visualization ${params.visualizationId}: ${error}`);
     return {
       isError: true,
       content: [
@@ -1544,7 +1544,7 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
       resources: [...queryResources, ...dashboardResources]
     };
   } catch (error) {
-    console.error('Error listing resources:', error);
+    logger.error(`Error listing resources: ${error}`);
     return {
       resources: []
     };
@@ -1597,7 +1597,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 
     throw new Error(`Unsupported resource type: ${type}`);
   } catch (error) {
-    console.error(`Error reading resource ${uri}:`, error);
+    logger.error(`Error reading resource ${uri}: ${error}`);
     throw error;
   }
 });
