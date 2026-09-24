@@ -330,6 +330,17 @@ export class RedashClient {
     return headers;
   }
 
+  async isApiKeyValid(): Promise<boolean> {
+    try {
+      await this.client.get('/api/session');
+      return true;
+    } catch (error) {
+      // Redash answers an unknown API key with 404, not 401
+      if (axios.isAxiosError(error) && error.response?.status === 404) return false;
+      throw error;
+    }
+  }
+
   // Get all queries (with pagination)
   async getQueries(page = 1, pageSize = 25, q?: string): Promise<{ count: number; page: number; pageSize: number; results: RedashQuery[] }> {
     try {
