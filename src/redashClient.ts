@@ -330,6 +330,17 @@ export class RedashClient {
     return headers;
   }
 
+  async isApiKeyValid(): Promise<boolean> {
+    try {
+      await this.client.get('/api/session');
+      return true;
+    } catch (error) {
+      // Redash answers an unknown API key with 404, not 401
+      if (axios.isAxiosError(error) && error.response?.status === 404) return false;
+      throw error;
+    }
+  }
+
   // Get all queries (with pagination)
   async getQueries(page = 1, pageSize = 25, q?: string): Promise<{ count: number; page: number; pageSize: number; results: RedashQuery[] }> {
     try {
@@ -355,7 +366,7 @@ export class RedashClient {
       const response = await this.client.get(`/api/queries/${queryId}`);
       return response.data;
     } catch (error) {
-      console.error(`Error fetching query ${queryId}:`, error);
+      logger.error(`Error fetching query ${queryId}: ${error}`);
       throw new Error(`Failed to fetch query ${queryId} from Redash`);
     }
   }
@@ -590,7 +601,7 @@ export class RedashClient {
         results: response.data.results
       };
     } catch (error) {
-      console.error('Error fetching dashboards:', error);
+      logger.error(`Error fetching dashboards: ${error}`);
       throw new Error('Failed to fetch dashboards from Redash');
     }
   }
@@ -601,7 +612,7 @@ export class RedashClient {
       const response = await this.client.get(`/api/dashboards/${dashboardId}`);
       return response.data;
     } catch (error) {
-      console.error(`Error fetching dashboard ${dashboardId}:`, error);
+      logger.error(`Error fetching dashboard ${dashboardId}: ${error}`);
       throw new Error(`Failed to fetch dashboard ${dashboardId} from Redash`);
     }
   }
@@ -625,7 +636,7 @@ export class RedashClient {
       const response = await this.client.get(`/api/visualizations/${visualizationId}`);
       return response.data;
     } catch (error) {
-      console.error(`Error fetching visualization ${visualizationId}:`, error);
+      logger.error(`Error fetching visualization ${visualizationId}: ${error}`);
       throw new Error(`Failed to fetch visualization ${visualizationId} from Redash`);
     }
   }
@@ -669,7 +680,7 @@ export class RedashClient {
       const response = await this.client.post('/api/visualizations', data);
       return response.data;
     } catch (error) {
-      console.error('Error creating visualization:', error);
+      logger.error(`Error creating visualization: ${error}`);
       throw new Error('Failed to create visualization');
     }
   }
@@ -680,7 +691,7 @@ export class RedashClient {
       const response = await this.client.post(`/api/visualizations/${visualizationId}`, data);
       return response.data;
     } catch (error) {
-      console.error(`Error updating visualization ${visualizationId}:`, error);
+      logger.error(`Error updating visualization ${visualizationId}: ${error}`);
       throw new Error(`Failed to update visualization ${visualizationId}`);
     }
   }
@@ -690,7 +701,7 @@ export class RedashClient {
     try {
       await this.client.delete(`/api/visualizations/${visualizationId}`);
     } catch (error) {
-      console.error(`Error deleting visualization ${visualizationId}:`, error);
+      logger.error(`Error deleting visualization ${visualizationId}: ${error}`);
       throw new Error(`Failed to delete visualization ${visualizationId}`);
     }
   }
@@ -740,10 +751,7 @@ export class RedashClient {
       );
       return response.data;
     } catch (error) {
-      console.error(
-        `Error fetching data source ${dataSourceId} schema:`,
-        error
-      );
+      logger.error(`Error fetching data source ${dataSourceId} schema: ${error}`);
       throw new Error(
         `Failed to fetch data source ${dataSourceId} schema from Redash`
       );

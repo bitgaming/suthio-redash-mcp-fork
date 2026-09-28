@@ -72,6 +72,11 @@ jest.mock('../logger.js', () => ({
   },
 }));
 
+const mockIsApiKeyValid = jest.fn(async () => true);
+jest.mock('../redashClient.js', () => ({
+  createRedashClient: jest.fn(() => ({ isApiKeyValid: mockIsApiKeyValid })),
+}));
+
 import { RedashOAuthProvider, getRedashApiKeyFromAuth } from '../auth.js';
 import { redis, redisKey } from '../redis.js';
 import { logger } from '../logger.js';
@@ -113,6 +118,7 @@ describe('RedashOAuthProvider', () => {
     mockMultiSet.mockReturnThis();
     mockMultiExpire.mockReturnThis();
     mockMultiExec.mockResolvedValue([[null, 'OK'], [null, 'OK'], [null, 1]]);
+    mockIsApiKeyValid.mockResolvedValue(true);
     provider = new RedashOAuthProvider();
   });
 
@@ -603,6 +609,32 @@ describe('RedashOAuthProvider', () => {
       expect(redis.set).toHaveBeenCalledWith(
         expect.stringContaining('redash-mcp:code:'),
         expect.stringContaining('my-redash-key'),
+        'EX',
+        expect.any(Number)
+      );
+    });
+
+    it('should re-render the form without issuing a code when Redash rejects the key', async () => {
+      store.set('redash-mcp:csrf:csrf-bad-key', { value: '1' });
+      const client = makeClient({
+        client_id: 'c4',
+        redirect_uris: ['http://localhost:3000/callback'],
+      });
+      store.set('redash-mcp:client:c4', { value: JSON.stringify(client) });
+      mockIsApiKeyValid.mockResolvedValue(false);
+
+      const res = mockResponse();
+      await provider.handleAuthorizeSubmit(
+        'csrf-bad-key', 'c4', 'http://localhost:3000/callback',
+        'ch', undefined, 'not-a-key', res
+      );
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('Redash did not accept this API key.'));
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalledWith(
+        expect.stringContaining('redash-mcp:code:'),
+        expect.anything(),
         'EX',
         expect.any(Number)
       );

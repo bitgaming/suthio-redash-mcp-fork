@@ -11,6 +11,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { logger } from "./logger.js";
 import { redis, redisKey } from "./redis.js";
 import { encrypt, decrypt } from "./crypto.js";
+import { createRedashClient } from "./redashClient.js";
 
 class OAuthValidationError extends Error {
   constructor(message: string) {
@@ -132,7 +133,8 @@ export class RedashOAuthProvider implements OAuthServerProvider {
   async authorize(
     client: OAuthClientInformationFull,
     params: AuthorizationParams,
-    res: Response
+    res: Response,
+    error?: string
   ): Promise<void> {
     const csrfToken = randomBytes(24).toString("hex");
     await redis.set(redisKey("csrf", csrfToken), "1", "EX", TTL_CSRF);
@@ -159,12 +161,14 @@ export class RedashOAuthProvider implements OAuthServerProvider {
     button:hover { background: #3a7bc8; }
     .hint { font-size: 0.8em; color: #999; margin-top: 6px; }
     .client-name { color: #4a90d9; font-weight: 600; }
+    .error { color: #c0392b; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Redash MCP Authorization</h1>
     <p>Enter your Redash API key to authorize <span class="client-name">${escapeHtml(client.client_name || "the application")}</span>.</p>
+    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
     <form method="POST" action="/authorize/submit">
       <input type="hidden" name="csrf_token" value="${csrfToken}">
       <input type="hidden" name="client_id" value="${escapeHtml(client.client_id)}">
@@ -425,6 +429,13 @@ export class RedashOAuthProvider implements OAuthServerProvider {
       if (!registeredUris.some((uri) => uri.toString() === redirectUri)) {
         logger.warning(`Authorization submit failed: invalid redirect_uri for client ${clientId}`);
         res.status(400).send("Invalid redirect_uri");
+        return;
+      }
+
+      if (!(await createRedashClient(redashApiKey).isApiKeyValid())) {
+        logger.warning(`Authorization submit failed: Redash rejected the API key for client ${clientId}`);
+        res.status(401);
+        await this.authorize(client, { redirectUri, codeChallenge, state }, res, "Redash did not accept this API key.");
         return;
       }
 

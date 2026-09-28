@@ -122,6 +122,26 @@ describe('RedashClient', () => {
     });
   });
 
+  describe('isApiKeyValid', () => {
+    it('should return true when Redash returns the session', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: {} });
+      await expect(client.isApiKeyValid()).resolves.toBe(true);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/session');
+    });
+
+    it('should return false when Redash answers 404', async () => {
+      mockedAxios.isAxiosError.mockReturnValue(true);
+      mockAxiosInstance.get.mockRejectedValue({ response: { status: 404 } });
+      await expect(client.isApiKeyValid()).resolves.toBe(false);
+    });
+
+    it('should rethrow other errors', async () => {
+      mockedAxios.isAxiosError.mockReturnValue(true);
+      mockAxiosInstance.get.mockRejectedValue({ response: { status: 502 } });
+      await expect(client.isApiKeyValid()).rejects.toEqual({ response: { status: 502 } });
+    });
+  });
+
   describe('getQueries', () => {
     it('should fetch queries with pagination', async () => {
       const mockResponse = {
